@@ -94,15 +94,12 @@ impl RuleForm {
     }
 }
 
-/// 预览行（GUI 展示用）
+/// 预览信息（GUI 渲染用）
 #[derive(Debug, Clone)]
 struct PreviewRow {
-    indent: usize,
-    name: String,
     new_name: String,
     status: PreviewStatus,
     note: String,
-    is_dir: bool,
 }
 
 struct RenameApp {
@@ -118,7 +115,8 @@ struct RenameApp {
     selected_rule: Option<usize>,
 
     tree: Option<TreeNode>,
-    preview_rows: Vec<PreviewRow>,
+    /// path → 预览信息（可改名节点的预览结果）
+    preview_by_path: std::collections::HashMap<std::path::PathBuf, PreviewRow>,
     status_msg: String,
     undo: UndoManager,
 }
@@ -136,7 +134,7 @@ impl RenameApp {
             rules: Vec::new(),
             selected_rule: None,
             tree: None,
-            preview_rows: Vec::new(),
+            preview_by_path: std::collections::HashMap::new(),
             status_msg: String::new(),
             undo: UndoManager::new(),
         }
@@ -155,7 +153,6 @@ impl RenameApp {
 
     fn reload(&mut self) {
         self.tree = None;
-        self.preview_rows.clear();
         let path = PathBuf::from(self.dir_input.trim());
         if !path.is_dir() {
             self.status_msg = format!("目录不存在：{}", path.display());
@@ -184,32 +181,29 @@ impl RenameApp {
         let by_path: std::collections::HashMap<&Path, &power_rename::preview::PreviewItem> =
             items.iter().map(|i| (i.entry.path.as_path(), i)).collect();
 
-        // 按树顺序生成预览行（含不可改名节点，显示原名）
-        self.preview_rows.clear();
-        let mut stack: Vec<(usize, &TreeNode)> = Vec::new();
-        stack.push((0, &tree));
-        while let Some((indent, node)) = stack.pop() {
-            let preview = by_path.get(node.path.as_path()).copied();
-            let (new_name, status, note) = match preview {
-                Some(p) => (p.new_name.clone(), p.status, p.note.clone()),
-                None => (node.name.clone(), PreviewStatus::Unchanged, String::new()),
-            };
-            self.preview_rows.push(PreviewRow {
-                indent,
-                name: node.name.clone(),
-                new_name,
-                status,
-                note,
-                is_dir: node.is_dir,
-            });
-            // 子节点（保持顺序，逆序入栈）
+        // 构建 path→预览映射（仅可改名节点）
+        self.preview_by_path.clear();
+        let mut stack: Vec<&TreeNode> = Vec::new();
+        stack.push(&tree);
+        while let Some(node) = stack.pop() {
+            if let Some(p) = by_path.get(node.path.as_path()).copied() {
+                self.preview_by_path.insert(
+                    node.path.clone(),
+                    PreviewRow {
+                        new_name: p.new_name.clone(),
+                        status: p.status,
+                        note: p.note.clone(),
+                    },
+                );
+            }
             for c in node.children.iter().rev() {
-                stack.push((indent + 1, c));
+                stack.push(c);
             }
         }
         self.tree = Some(tree);
-        let renamed = self.preview_rows.iter().filter(|r| r.status == PreviewStatus::Ok).count();
-        self.status_msg = format!("共 {} 项，可改名 {} 项", self.preview_rows.len(), renamed);
+        let renamed = self.preview_by_path.values().filter(|r| r.status == PreviewStatus::Ok).count();
+        let total = self.preview_by_path.len();
+        self.status_msg = format!("共 {total} 项，可改名 {renamed} 项");
     }
 
     fn apply(&mut self) {
@@ -507,35 +501,57 @@ impl eframe::App for RenameApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("预览");
             egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
-                for row in &self.preview_rows {
-                    let indent = "  ".repeat(row.indent);
-                    let color = match row.status {
-                        PreviewStatus::Ok => egui::Color32::from_rgb(0x2e, 0x8b, 0x57),
-                        PreviewStatus::Conflict => egui::Color32::from_rgb(0xc0, 0x39, 0x2b),
-                        PreviewStatus::Error => egui::Color32::from_rgb(0x8b, 0x00, 0x00),
-                        PreviewStatus::Unchanged => egui::Color32::GRAY,
-                    };
-                    let arrow = if row.status == PreviewStatus::Ok { " → " } else { "   " };
-                    ui.horizontal(|ui| {
-                        let mut text = format!("{indent}");
-                        if row.is_dir {
-                            text.push('📁');
-                        } else {
-                            text.push('📄');
-                        }
-                        text.push_str(&row.name);
-                        text.push_str(arrow);
-                        text.push_str(&row.new_name);
-                        if !row.note.is_empty() {
-                            text.push_str("  (");
-                            text.push_str(&row.note);
-                            text.push(')');
-                        }
-                        ui.colored_label(color, text);
-                    });
+                if let Some(tree) = &self.tree {
+                    let mut expanded = std::collections::HashSet::new();
+                    render_tree_node(ui, tree, &self.preview_by_path, &mut expanded, true);
+                } else {
+                    ui.label("（未加载目录）");
                 }
             });
         });
+    }
+}
+
+/// 递归渲染预览树：目录用 CollapsingHeader（可折叠），文件/可改名节点显示状态。
+fn render_tree_node(
+    ui: &mut egui::Ui,
+    node: &power_rename::fs_tree::TreeNode,
+    by_path: &std::collections::HashMap<std::path::PathBuf, PreviewRow>,
+    _expanded: &mut std::collections::HashSet<std::path::PathBuf>,
+    default_open: bool,
+) {
+    if node.is_dir {
+        let children = &node.children;
+        egui::CollapsingHeader::new(format!("📁 {}", node.name))
+            .default_open(default_open)
+            .show(ui, |ui| {
+                for child in children {
+                    render_tree_node(ui, child, by_path, _expanded, false);
+                }
+            });
+    } else {
+        let row = by_path.get(&node.path);
+        let (new_name, status, note) = match row {
+            Some(r) => (r.new_name.clone(), r.status, r.note.clone()),
+            None => (node.name.clone(), PreviewStatus::Unchanged, String::new()),
+        };
+        let color = match status {
+            PreviewStatus::Ok => egui::Color32::from_rgb(0x2e, 0x8b, 0x57),
+            PreviewStatus::Conflict => egui::Color32::from_rgb(0xc0, 0x39, 0x2b),
+            PreviewStatus::Error => egui::Color32::from_rgb(0x8b, 0x00, 0x00),
+            PreviewStatus::Unchanged => egui::Color32::GRAY,
+        };
+        let arrow = if status == PreviewStatus::Ok { " → " } else { "   " };
+        let mut text = String::from("📄 ");
+        text.push_str(&node.name);
+        text.push_str(arrow);
+        text.push_str(&new_name);
+        if !note.is_empty() {
+            text.push_str("  (");
+            text.push_str(&note);
+            text.push(')');
+        }
+        ui.colored_label(color, text);
     }
 }
 
