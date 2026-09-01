@@ -251,3 +251,72 @@ mod tests {
         assert!(!has_invalid_chars("a b.txt"));
     }
 }
+#[cfg(test)]
+mod integration_tests {
+    //! 全链路：load_entries → compute_preview → apply_renames → undo
+    use super::*;
+    use crate::apply::apply_renames;
+    use crate::fs_tree::{load_entries, LoadOptions};
+    use std::fs;
+
+    #[test]
+    fn full_pipeline_apply_and_undo() {
+        let dir = std::env::temp_dir().join(format!(
+            "pr_e2e_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("a.txt"), "1").unwrap();
+        fs::write(dir.join("b.txt"), "2").unwrap();
+
+        // 1. 加载
+        let entries = load_entries(&dir, &LoadOptions::default());
+        assert_eq!(entries.len(), 2);
+
+        // 2. 预览：a→x、b→y（分别替换）
+        let rules = [
+            crate::rules::Rule::Replace {
+                search: "a".into(),
+                replace: "x".into(),
+                case_sensitive: false,
+                scope: crate::rules::Scope::Full,
+            },
+            crate::rules::Rule::Replace {
+                search: "b".into(),
+                replace: "y".into(),
+                case_sensitive: false,
+                scope: crate::rules::Scope::Full,
+            },
+        ];
+        let items = compute_preview(&entries, &rules);
+        assert_eq!(items.len(), 2);
+        assert!(items.iter().all(|i| i.status == PreviewStatus::Ok));
+
+        // 3. 执行
+        let todo: Vec<_> = items
+            .iter()
+            .filter(|i| i.status == PreviewStatus::Ok)
+            .map(|i| (i.entry.path.clone(), dir.join(&i.new_name)))
+            .collect();
+        let res = apply_renames(&todo);
+        assert!(!res.rolled_back);
+        assert!(dir.join("x.txt").exists());
+        assert!(dir.join("y.txt").exists());
+        assert!(!dir.join("a.txt").exists());
+
+        // 4. 撤销
+        let mut um = crate::apply::UndoManager::new();
+        um.push(res.logs.clone());
+        let (done, errors) = um.undo();
+        assert_eq!(done, 2);
+        assert!(errors.is_empty());
+        assert!(dir.join("a.txt").exists());
+        assert!(dir.join("b.txt").exists());
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+}

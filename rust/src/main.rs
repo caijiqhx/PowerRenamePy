@@ -1,0 +1,462 @@
+//! PowerRenamePy Rust 版 — egui GUI 主程序。
+//!
+//! 布局：
+//!   ┌────────────────────────────────────────────┐
+//!   │ 路径输入 [加载] 递归□ 深度[ ] 含文件□ 含文件夹□ │
+//!   │ 名称包含[ ] 排除[ ] 正则□                   │
+//!   ├──────────────┬─────────────────────────────┤
+//!   │ 规则列表      │ 预览树（原名 → 新名 + 状态） │
+//!   │ [添加][删除]  │                             │
+//!   │ 规则表单      │                             │
+//!   ├──────────────┴─────────────────────────────┤
+//!   │ 状态栏   [应用] [撤销]                      │
+//!   └────────────────────────────────────────────┘
+
+use std::path::{Path, PathBuf};
+
+use eframe::egui;
+
+use power_rename::apply::{apply_renames, UndoManager};
+use power_rename::fs_tree::{load_tree, flatten_tree, LoadOptions, TreeNode};
+use power_rename::preview::{compute_preview, PreviewStatus};
+
+/// 规则表单数据（GUI 编辑用，提交时转成引擎 Rule）
+#[derive(Debug, Clone, PartialEq)]
+enum RuleForm {
+    Replace {
+        search: String,
+        replace: String,
+        case_sensitive: bool,
+        scope: usize, // 0=完整名 1=主名 2=扩展名
+    },
+    Regex {
+        pattern: String,
+        replace: String,
+        scope: usize,
+    },
+}
+
+impl RuleForm {
+    fn summary(&self) -> String {
+        match self {
+            RuleForm::Replace { search, replace, case_sensitive, .. } => {
+                let cs = if *case_sensitive { "敏感" } else { "忽略大小写" };
+                format!("替换 [{search}] → [{replace}] ({cs})")
+            }
+            RuleForm::Regex { pattern, replace, .. } => {
+                format!("正则 [{pattern}] → [{replace}]")
+            }
+        }
+    }
+
+    fn to_rule(&self) -> power_rename::rules::Rule {
+        let scope = match self.scope() {
+            1 => power_rename::rules::Scope::Stem,
+            2 => power_rename::rules::Scope::Ext,
+            _ => power_rename::rules::Scope::Full,
+        };
+        match self {
+            RuleForm::Replace { search, replace, case_sensitive, .. } => {
+                power_rename::rules::Rule::Replace {
+                    search: search.clone(),
+                    replace: replace.clone(),
+                    case_sensitive: *case_sensitive,
+                    scope,
+                }
+            }
+            RuleForm::Regex { pattern, replace, .. } => power_rename::rules::Rule::Regex {
+                pattern: pattern.clone(),
+                replace: replace.clone(),
+                scope,
+            },
+        }
+    }
+
+    fn scope(&self) -> usize {
+        match self {
+            RuleForm::Replace { scope, .. } | RuleForm::Regex { scope, .. } => *scope,
+        }
+    }
+
+    fn set_scope(&mut self, s: usize) {
+        match self {
+            RuleForm::Replace { scope, .. } | RuleForm::Regex { scope, .. } => *scope = s,
+        }
+    }
+}
+
+/// 预览行（GUI 展示用）
+#[derive(Debug, Clone)]
+struct PreviewRow {
+    indent: usize,
+    name: String,
+    new_name: String,
+    status: PreviewStatus,
+    note: String,
+    is_dir: bool,
+}
+
+struct RenameApp {
+    dir_input: String,
+    recursive: bool,
+    include_files: bool,
+    include_dirs: bool,
+    inc_text: String,
+    exc_text: String,
+    use_regex: bool,
+
+    rules: Vec<RuleForm>,
+    selected_rule: Option<usize>,
+
+    tree: Option<TreeNode>,
+    preview_rows: Vec<PreviewRow>,
+    status_msg: String,
+    undo: UndoManager,
+}
+
+impl RenameApp {
+    fn new() -> Self {
+        Self {
+            dir_input: String::new(),
+            recursive: true,
+            include_files: true,
+            include_dirs: false,
+            inc_text: String::new(),
+            exc_text: String::new(),
+            use_regex: false,
+            rules: Vec::new(),
+            selected_rule: None,
+            tree: None,
+            preview_rows: Vec::new(),
+            status_msg: String::new(),
+            undo: UndoManager::new(),
+        }
+    }
+
+    fn load_options(&self) -> LoadOptions {
+        LoadOptions {
+            recursive: self.recursive,
+            include_files: self.include_files,
+            include_dirs: self.include_dirs,
+            inc_text: self.inc_text.trim().to_string(),
+            exc_text: self.exc_text.trim().to_string(),
+            use_regex: self.use_regex,
+        }
+    }
+
+    fn reload(&mut self) {
+        self.tree = None;
+        self.preview_rows.clear();
+        let path = PathBuf::from(self.dir_input.trim());
+        if !path.is_dir() {
+            self.status_msg = format!("目录不存在：{}", path.display());
+            return;
+        }
+        let opts = self.load_options();
+        // 深度限制：LoadOptions 无字段，非递归时由 recursive=false 控制；深度留待扩展
+        let tree = load_tree(&path, &opts);
+        // 预览行构建：展平树 + 冲突检测（可改名节点参与改名）
+        let mut nodes = Vec::new();
+        flatten_tree(&tree, &mut nodes);
+        // 参与改名的节点 → entries（带原路径）
+        let mut entries: Vec<power_rename::fs_tree::FileEntry> = Vec::new();
+        for n in &nodes {
+            if n.renameable {
+                entries.push(power_rename::fs_tree::FileEntry {
+                    path: n.path.clone(),
+                    name: n.name.clone(),
+                    is_dir: n.is_dir,
+                });
+            }
+        }
+        let rules: Vec<power_rename::rules::Rule> = self.rules.iter().map(|r| r.to_rule()).collect();
+        let items = compute_preview(&entries, &rules);
+        // 用「完整路径」做 key 查预览（文件名跨目录可能重复，路径唯一）
+        let by_path: std::collections::HashMap<&Path, &power_rename::preview::PreviewItem> =
+            items.iter().map(|i| (i.entry.path.as_path(), i)).collect();
+
+        // 按树顺序生成预览行（含不可改名节点，显示原名）
+        self.preview_rows.clear();
+        let mut stack: Vec<(usize, &TreeNode)> = Vec::new();
+        stack.push((0, &tree));
+        while let Some((indent, node)) = stack.pop() {
+            let preview = by_path.get(node.path.as_path()).copied();
+            let (new_name, status, note) = match preview {
+                Some(p) => (p.new_name.clone(), p.status, p.note.clone()),
+                None => (node.name.clone(), PreviewStatus::Unchanged, String::new()),
+            };
+            self.preview_rows.push(PreviewRow {
+                indent,
+                name: node.name.clone(),
+                new_name,
+                status,
+                note,
+                is_dir: node.is_dir,
+            });
+            // 子节点（保持顺序，逆序入栈）
+            for c in node.children.iter().rev() {
+                stack.push((indent + 1, c));
+            }
+        }
+        self.tree = Some(tree);
+        let renamed = self.preview_rows.iter().filter(|r| r.status == PreviewStatus::Ok).count();
+        self.status_msg = format!("共 {} 项，可改名 {} 项", self.preview_rows.len(), renamed);
+    }
+
+    fn apply(&mut self) {
+        if self.tree.is_none() {
+            self.status_msg = "请先加载目录".to_string();
+            return;
+        }
+        let rules: Vec<power_rename::rules::Rule> = self.rules.iter().map(|r| r.to_rule()).collect();
+        let mut entries = Vec::new();
+        if let Some(tree) = &self.tree {
+            let mut nodes = Vec::new();
+            flatten_tree(tree, &mut nodes);
+            for n in &nodes {
+                if n.renameable {
+                    entries.push(power_rename::fs_tree::FileEntry {
+                        path: n.path.clone(),
+                        name: n.name.clone(),
+                        is_dir: n.is_dir,
+                    });
+                }
+            }
+        }
+        let items = compute_preview(&entries, &rules);
+        let mut todo: Vec<(PathBuf, PathBuf)> = Vec::new();
+        for it in &items {
+            if it.status == PreviewStatus::Ok && it.new_name != it.old_name {
+                todo.push((it.entry.path.clone(), it.entry.path.parent().unwrap_or(Path::new("")).join(&it.new_name)));
+            }
+        }
+        if todo.is_empty() {
+            self.status_msg = "没有可执行的改名".to_string();
+            return;
+        }
+        let res = apply_renames(&todo);
+        if res.rolled_back {
+            self.status_msg = format!("改名失败，已回滚：{}", res.errors.join("；"));
+        } else {
+            self.undo.push(res.logs.clone());
+            self.status_msg = format!("成功改名 {} 项，可撤销", res.logs.len());
+        }
+        self.reload();
+    }
+
+    fn undo(&mut self) {
+        let (done, errors) = self.undo.undo();
+        if done > 0 {
+            self.status_msg = format!("已撤销 {done} 项");
+        } else if !errors.is_empty() {
+            self.status_msg = format!("撤销失败：{}", errors.join("；"));
+        } else {
+            self.status_msg = "没有可撤销的操作".to_string();
+        }
+        self.reload();
+    }
+}
+
+impl eframe::App for RenameApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::TopBottomPanel::top("top").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("目录：");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.dir_input)
+                        .desired_width(320.0)
+                        .hint_text("输入文件夹路径"),
+                );
+                if ui.button("加载").clicked() {
+                    self.reload();
+                }
+                if ui.button("浏览…").clicked() {
+                    if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                        self.dir_input = dir.to_string_lossy().into_owned();
+                        self.reload();
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                let mut opts_changed = false;
+                opts_changed |= ui.checkbox(&mut self.recursive, "递归子目录").changed();
+                opts_changed |= ui.checkbox(&mut self.include_files, "包含文件").changed();
+                opts_changed |= ui.checkbox(&mut self.include_dirs, "包含文件夹").changed();
+                ui.separator();
+                ui.label("名称包含：");
+                opts_changed |= ui.text_edit_singleline(&mut self.inc_text).changed();
+                ui.label("排除：");
+                opts_changed |= ui.text_edit_singleline(&mut self.exc_text).changed();
+                opts_changed |= ui.checkbox(&mut self.use_regex, "正则").changed();
+                if opts_changed && self.tree.is_some() {
+                    self.reload();
+                }
+            });
+        });
+
+        egui::TopBottomPanel::bottom("bottom").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(&self.status_msg);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("撤销").clicked() {
+                        self.undo();
+                    }
+                    if ui.button("应用").clicked() {
+                        self.apply();
+                    }
+                });
+            });
+        });
+
+        egui::SidePanel::left("rules").resizable(true).default_width(320.0).show(ctx, |ui| {
+            ui.heading("规则");
+            ui.horizontal(|ui| {
+                let mut add_replace = false;
+                let mut add_regex = false;
+                if ui.button("+ 替换").clicked() {
+                    add_replace = true;
+                }
+                if ui.button("+ 正则").clicked() {
+                    add_regex = true;
+                }
+                if ui.button("删除").clicked() {
+                    if let Some(idx) = self.selected_rule {
+                        if idx < self.rules.len() {
+                            self.rules.remove(idx);
+                            self.selected_rule = None;
+                        }
+                    }
+                }
+                if add_replace {
+                    self.rules.push(RuleForm::Replace {
+                        search: String::new(),
+                        replace: String::new(),
+                        case_sensitive: false,
+                        scope: 0,
+                    });
+                    self.selected_rule = Some(self.rules.len() - 1);
+                }
+                if add_regex {
+                    self.rules.push(RuleForm::Regex {
+                        pattern: String::new(),
+                        replace: String::new(),
+                        scope: 0,
+                    });
+                    self.selected_rule = Some(self.rules.len() - 1);
+                }
+            });
+
+            // 规则列表
+            let mut to_select: Option<usize> = None;
+            for (i, r) in self.rules.iter().enumerate() {
+                let selected = self.selected_rule == Some(i);
+                if ui.selectable_label(selected, r.summary()).clicked() {
+                    to_select = Some(i);
+                }
+            }
+            if let Some(i) = to_select {
+                self.selected_rule = Some(i);
+            }
+
+            ui.separator();
+
+            // 规则表单
+            if let Some(idx) = self.selected_rule {
+                if idx < self.rules.len() {
+                    ui.label(format!("规则 #{}", idx + 1));
+                    let mut changed = false;
+                    match &mut self.rules[idx] {
+                        RuleForm::Replace { search, replace, case_sensitive, .. } => {
+                            ui.horizontal(|ui| {
+                                ui.label("查找：");
+                                changed |= ui.text_edit_singleline(search).changed();
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("替换为：");
+                                changed |= ui.text_edit_singleline(replace).changed();
+                            });
+                            changed |= ui.checkbox(case_sensitive, "大小写敏感").changed();
+                        }
+                        RuleForm::Regex { pattern, replace, .. } => {
+                            ui.horizontal(|ui| {
+                                ui.label("正则：");
+                                changed |= ui.text_edit_singleline(pattern).changed();
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("替换为：");
+                                changed |= ui.text_edit_singleline(replace).changed();
+                            });
+                        }
+                    }
+                    // 作用范围
+                    let scopes = ["完整文件名", "主名（不含扩展名）", "扩展名"];
+                    let mut scope = self.rules[idx].scope();
+                    ui.horizontal(|ui| {
+                        ui.label("作用范围：");
+                        for (si, label) in scopes.iter().enumerate() {
+                            if ui.selectable_label(scope == si, *label).clicked() {
+                                scope = si;
+                                changed = true;
+                            }
+                        }
+                    });
+                    self.rules[idx].set_scope(scope);
+
+                    // 规则变化 → 实时刷新预览
+                    if changed {
+                        self.reload();
+                    }
+                }
+            } else if self.rules.is_empty() {
+                ui.label("（还没有规则，点上方添加）");
+            } else {
+                ui.label("（选择一条规则编辑）");
+            }
+        });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading("预览");
+            egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
+                for row in &self.preview_rows {
+                    let indent = "  ".repeat(row.indent);
+                    let color = match row.status {
+                        PreviewStatus::Ok => egui::Color32::from_rgb(0x2e, 0x8b, 0x57),
+                        PreviewStatus::Conflict => egui::Color32::from_rgb(0xc0, 0x39, 0x2b),
+                        PreviewStatus::Error => egui::Color32::from_rgb(0x8b, 0x00, 0x00),
+                        PreviewStatus::Unchanged => egui::Color32::GRAY,
+                    };
+                    let arrow = if row.status == PreviewStatus::Ok { " → " } else { "   " };
+                    ui.horizontal(|ui| {
+                        let mut text = format!("{indent}");
+                        if row.is_dir {
+                            text.push('📁');
+                        } else {
+                            text.push('📄');
+                        }
+                        text.push_str(&row.name);
+                        text.push_str(arrow);
+                        text.push_str(&row.new_name);
+                        if !row.note.is_empty() {
+                            text.push_str("  (");
+                            text.push_str(&row.note);
+                            text.push(')');
+                        }
+                        ui.colored_label(color, text);
+                    });
+                }
+            });
+        });
+    }
+}
+
+fn main() -> eframe::Result {
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_inner_size([1000.0, 700.0]).with_title("PowerRename Py — 批量重命名工具 (Rust)"),
+        ..Default::default()
+    };
+    eframe::run_native(
+        "PowerRenamePy Rust",
+        options,
+        Box::new(|_cc| Ok(Box::new(RenameApp::new()))),
+    )
+}
