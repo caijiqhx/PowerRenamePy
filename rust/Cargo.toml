@@ -1,0 +1,13 @@
+[package]
+name = "power_rename"
+version = "0.1.0"
+edition = "2021"
+description = "Batch file renaming tool (Rust port of PowerRenamePy)"
+
+[lib]
+name = "power_rename"
+path = "src/lib.rs"
+
+[dependencies]
+regex = "1"
+fancy-regex = "0.14"

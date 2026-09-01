@@ -9,3 +9,6 @@ dist-arm64/
 # 构建脚本临时文件
 __pycache__/
 *.pyc
+
+# Rust 编译产物
+rust/target/

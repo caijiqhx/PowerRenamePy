@@ -1,0 +1,7 @@
+//! PowerRenamePy Rust 移植版 — 库入口。
+
+pub mod rules;
+pub mod transform;
+pub mod fs_tree;
+pub mod preview;
+pub mod apply;
