@@ -35,7 +35,9 @@ from src.rename_engine import (
     apply_renames,
     build_export_text,
     compute_preview,
+    flatten_tree,
     load_entries,
+    load_tree,
     make_rule,
     parse_rename_list,
     serialize_rules,
@@ -378,6 +380,117 @@ class TestExport(unittest.TestCase):
     def test_empty(self):
         self.assertEqual(build_export_text([]), "")
         self.assertEqual(build_export_text([], []), "")
+
+
+class TestLoadTree(unittest.TestCase):
+    def _mk_tree(self, structure):
+        """structure: dict {path: is_dir}，suffix '/' 表示目录。"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            for rel, is_dir in structure.items():
+                p = root / rel
+                if is_dir:
+                    p.mkdir(parents=True, exist_ok=True)
+                else:
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_text("x", encoding="utf-8")
+            yield root
+
+    def test_flatten_nested_structure(self):
+        for root in self._mk_tree({
+            "a.txt": False,
+            "sub/b.txt": False,
+            "sub/deep/c.txt": False,
+            "sub/deep/dir/": True,
+            "sub/deep/dir/e.txt": False,
+        }):
+            tree = load_tree(root, recursive=True)
+            nodes = flatten_tree(tree)
+            # root + a.txt + sub + b.txt + deep + c.txt + dir + e.txt = 8
+            self.assertEqual(len(nodes), 8)
+            names = [n.name for n in nodes]
+            self.assertIn("a.txt", names)
+            self.assertIn("sub", names)
+            self.assertIn("deep", names)
+            self.assertIn("dir", names)
+            self.assertIn("e.txt", names)
+
+    def test_non_recursive(self):
+        for root in self._mk_tree({
+            "a.txt": False,
+            "sub/b.txt": False,
+        }):
+            tree = load_tree(root, recursive=False)
+            nodes = flatten_tree(tree)
+            # 根 + a.txt + sub(不展开) = 3
+            self.assertEqual(len(nodes), 3)
+            sub = [n for n in nodes if n.name == "sub"][0]
+            self.assertEqual(sub.children, [])
+
+    def test_renameable_defaults(self):
+        for root in self._mk_tree({
+            "a.txt": False,
+            "sub/b.txt": False,
+        }):
+            tree = load_tree(root, recursive=True)
+            nodes = {n.name: n for n in flatten_tree(tree)}
+            self.assertTrue(nodes["a.txt"].renameable)      # 文件默认可改名
+            self.assertFalse(nodes["sub"].renameable)       # 目录默认不改名
+            self.assertTrue(nodes["b.txt"].renameable)
+            self.assertFalse(nodes[root.name].renameable)
+
+    def test_exclude_dirs_flag(self):
+        for root in self._mk_tree({
+            "a.txt": False,
+            "sub/b.txt": False,
+        }):
+            tree = load_tree(root, recursive=True, include_dirs=False)
+            nodes = {n.name: n for n in flatten_tree(tree)}
+            self.assertFalse(nodes["sub"].renameable)
+            self.assertTrue(nodes["a.txt"].renameable)
+
+    def test_include_dirs_flag(self):
+        for root in self._mk_tree({
+            "a.txt": False,
+            "sub/b.txt": False,
+        }):
+            tree = load_tree(root, recursive=True, include_dirs=True)
+            nodes = {n.name: n for n in flatten_tree(tree)}
+            self.assertTrue(nodes["sub"].renameable)
+
+    def test_include_files_filter(self):
+        for root in self._mk_tree({
+            "keep.txt": False,
+            "skip.txt": False,
+        }):
+            tree = load_tree(root, recursive=False, inc_text="keep")
+            nodes = {n.name: n for n in flatten_tree(tree)}
+            self.assertTrue(nodes["keep.txt"].renameable)
+            self.assertFalse(nodes["skip.txt"].renameable)
+            # 结构节点仍然保留
+            self.assertIn("skip.txt", nodes)
+
+    def test_exclude_filter(self):
+        for root in self._mk_tree({
+            "keep.txt": False,
+            "skip.txt": False,
+        }):
+            tree = load_tree(root, recursive=False, exc_text="skip")
+            nodes = {n.name: n for n in flatten_tree(tree)}
+            self.assertTrue(nodes["keep.txt"].renameable)
+            self.assertFalse(nodes["skip.txt"].renameable)
+
+    def test_dir_structure_preserved_after_filter(self):
+        for root in self._mk_tree({
+            "sub/keep.txt": False,
+            "sub/skip.txt": False,
+        }):
+            tree = load_tree(root, recursive=True, inc_text="keep")
+            nodes = {n.name: n for n in flatten_tree(tree)}
+            self.assertTrue(nodes["keep.txt"].renameable)
+            self.assertFalse(nodes["skip.txt"].renameable)
+            # 目录 sub 即使内部有过滤掉的条目也保留
+            self.assertIn("sub", nodes)
 
 
 if __name__ == "__main__":

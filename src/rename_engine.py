@@ -159,6 +159,16 @@ class FileEntry:
 
 
 @dataclass
+class TreeNode:
+    """目录树节点：目录用于体现结构（始终显示），renameable 决定是否参与改名。"""
+    path: Path
+    name: str
+    is_dir: bool
+    renameable: bool = False
+    children: List["TreeNode"] = field(default_factory=list)
+
+
+@dataclass
 class PreviewItem:
     entry: FileEntry
     old_name: str
@@ -557,6 +567,79 @@ class UndoManager:
 
 
 # ---------------------------------------------------------------- 目录加载
+def load_tree(
+    dirpath,
+    recursive: bool = True,
+    include_files: bool = True,
+    include_dirs: bool = False,
+    inc_text: str = "",
+    exc_text: str = "",
+    use_regex: bool = False,
+) -> TreeNode:
+    """
+    以树形结构加载目录（体现子目录层级）。
+
+    - 目录节点始终保留（便于展示结构），是否参与改名由 include_dirs 决定。
+    - 文件/文件夹是否“可参与改名”由 include_files/include_dirs 及名称筛选决定。
+    - inc_text/exc_text 作用于名称（目录按自身名筛选；递归时不因目录未匹配而剪枝）。
+    筛选后无内容的空目录也会保留（结构展示）。
+    """
+    root = TreeNode(p := Path(dirpath), p.name or str(p), True, renameable=False)
+
+    def name_ok(name: str) -> bool:
+        if inc_text:
+            try:
+                hit = re.search(inc_text, name) if use_regex else inc_text in name
+            except re.error:
+                hit = False
+            if not hit:
+                return False
+        if exc_text:
+            try:
+                hit = re.search(exc_text, name) if use_regex else exc_text in name
+            except re.error:
+                hit = False
+            if hit:
+                return False
+        return True
+
+    def walk(node: TreeNode, limit_depth: int) -> None:
+        try:
+            paths = sorted(node.path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+        except OSError:
+            return
+        for child_path in paths:
+            try:
+                is_dir = child_path.is_dir()
+            except OSError:
+                continue
+            child = TreeNode(child_path, child_path.name, is_dir)
+            if is_dir:
+                child.renameable = include_dirs and name_ok(child.name)
+                if limit_depth != 0:
+                    walk(child, limit_depth - 1)
+                node.children.append(child)
+            else:
+                child.renameable = include_files and name_ok(child.name)
+                node.children.append(child)
+
+    walk(root, -1 if recursive else 0)
+    return root
+
+
+def flatten_tree(node: TreeNode) -> List[TreeNode]:
+    """深度遍历树，返回全部节点（含目录结构节点与可改名文件）。"""
+    out: List[TreeNode] = []
+    _walk(node, out)
+    return out
+
+
+def _walk(node: TreeNode, out: List[TreeNode]) -> None:
+    out.append(node)
+    for c in node.children:
+        _walk(c, out)
+
+
 def load_entries(
     dirpath,
     recursive: bool = True,

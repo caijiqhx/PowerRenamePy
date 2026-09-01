@@ -26,14 +26,16 @@ from rename_engine import (
     STATUS_UNCHANGED,
     TYPE_BY_ID,
     ApplyResult,
+    FileEntry,
     RenameRule,
     UndoManager,
     apply_renames,
     build_export_text,
     compute_preview,
     default_rule,
-    load_entries,
     deserialize_rules,
+    flatten_tree,
+    load_tree,
     make_rule,
     parse_rename_list,
     read_text_auto_encoding,
@@ -47,6 +49,8 @@ _TAG_COLORS = {
     STATUS_CONFLICT: {"foreground": "#b00d1c", "background": "#ffe9e9"},
     STATUS_ERROR: {"foreground": "#b00d1c"},
     STATUS_UNCHANGED: {"foreground": "#8a8a8a"},
+    "dir": {"foreground": "#1a4f8b", "font": ("", 9, "bold")},
+    "skipped": {"foreground": "#b5b5b5"},
 }
 
 
@@ -57,7 +61,8 @@ class PowerRenameApp:
         root.geometry("1220x760")
         root.minsize(980, 600)
 
-        self.entries = []
+        self.tree_root = None        # TreeNode 根节点（目录结构树）
+        self.renameable_nodes = []   # 可参与改名的节点（展平过滤）
         self.preview = []
         self.rules: list[RenameRule] = []
         self.undo_mgr = UndoManager()
@@ -320,18 +325,19 @@ class PowerRenameApp:
 
     # ------------------------------------------------------------ 预览面板
     def _build_preview_panel(self, parent) -> None:
-        lf = ttk.LabelFrame(parent, text="重命名预览", padding=6)
+        lf = ttk.LabelFrame(parent, text="重命名预览（树形展示，可折叠目录）", padding=6)
         lf.pack(fill=tk.BOTH, expand=True)
 
-        tree = ttk.Treeview(lf, columns=("old", "new", "status", "note"), show="headings")
-        tree.heading("old", text="当前名称")
+        tree = ttk.Treeview(lf, columns=("new", "status", "note"),
+                            show="tree headings")
+        tree.heading("#0", text="当前名称（结构）")
         tree.heading("new", text="新名称")
         tree.heading("status", text="状态")
         tree.heading("note", text="说明")
-        tree.column("old", width=280)
-        tree.column("new", width=280)
+        tree.column("#0", width=300)
+        tree.column("new", width=260)
         tree.column("status", width=64, anchor=tk.CENTER, stretch=False)
-        tree.column("note", width=220)
+        tree.column("note", width=200)
 
         vsb = ttk.Scrollbar(lf, orient=tk.VERTICAL, command=tree.yview)
         hsb = ttk.Scrollbar(lf, orient=tk.HORIZONTAL, command=tree.xview)
@@ -348,41 +354,78 @@ class PowerRenameApp:
         tree.bind("<Button-3>", self._on_preview_rmb)
         self.preview_tree = tree
 
+    def _renameable_entries(self) -> list[FileEntry]:
+        return [FileEntry(n.path, n.name, n.is_dir) for n in self.renameable_nodes]
+
     def refresh_preview(self) -> None:
-        self.preview = compute_preview(self.entries, self.rules) if self.entries else []
+        entries = self._renameable_entries()
+        self.preview = compute_preview(entries, self.rules) if entries else []
+        preview_by_path = {str(it.entry.path): it for it in self.preview}
+
         tree = self.preview_tree
         tree.delete(*tree.get_children())
-        for i, item in enumerate(self.preview):
-            tree.insert("", "end", iid=str(i),
-                        values=(item.old_name, item.new_name,
-                                STATUS_LABELS[item.status], item.note),
-                        tags=(item.status,))
+
+        def insert_node(node, parent_iid: str) -> None:
+            iid = str(node.path)
+            item = preview_by_path.get(iid)
+            if node.is_dir:
+                if item is not None:
+                    # 目录参与改名：按预览状态显示
+                    tags = (item.status,)
+                    vals = (item.new_name, STATUS_LABELS[item.status], item.note)
+                else:
+                    tags = ("dir",)
+                    vals = ("", "", "")
+            else:
+                if item is not None:
+                    tags = (item.status,)
+                    vals = (item.new_name, STATUS_LABELS[item.status], item.note)
+                else:
+                    # 被筛掉的节点：仅结构展示
+                    tags = ("skipped",)
+                    vals = ("", "", "")
+            tree.insert(parent_iid, "end", iid=iid, text=node.name,
+                        values=vals, tags=tags, open=node.is_dir)
+            for c in node.children:
+                insert_node(c, iid)
+
+        if self.tree_root is not None:
+            insert_node(self.tree_root, "")
 
         n_ok = sum(1 for it in self.preview if it.status == STATUS_OK)
         n_conf = sum(1 for it in self.preview if it.status == STATUS_CONFLICT)
         n_err = sum(1 for it in self.preview if it.status == STATUS_ERROR)
         n_unch = sum(1 for it in self.preview if it.status == STATUS_UNCHANGED)
+        n_total = len(self.preview)
+        n_skip = (len(flatten_tree(self.tree_root)) if self.tree_root else 0) - n_total
         self.stats_var.set(
-            f"共 {len(self.preview)} 项  |  将重命名 {n_ok}  |  冲突 {n_conf}  |  "
-            f"错误 {n_err}  |  无变化 {n_unch}")
+            f"共 {n_total + n_skip} 个节点  |  可改名 {n_total}  |  将重命名 {n_ok}  |  "
+            f"冲突 {n_conf}  |  错误 {n_err}  |  无变化 {n_unch}  |  跳过 {n_skip}")
 
     def _on_preview_rmb(self, event) -> None:
         iid = self.preview_tree.identify_row(event.y)
         if not iid:
             return
         self.preview_tree.selection_set(iid)
+        path = Path(iid)
         menu = tk.Menu(self.root, tearoff=0)
-        menu.add_command(label="打开所在文件夹", command=lambda: self._reveal(int(iid)))
+        if path.is_dir():
+            menu.add_command(label="打开文件夹", command=lambda: self._open_path(path))
+        else:
+            menu.add_command(label="打开所在文件夹", command=lambda: self._reveal_path(path))
         menu.add_command(label="刷新预览", command=self.refresh_preview)
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
 
-    def _reveal(self, idx: int) -> None:
-        if not (0 <= idx < len(self.preview)):
-            return
-        path = self.preview[idx].entry.path
+    def _open_path(self, path: Path) -> None:
+        if sys.platform == "win32":
+            subprocess.Popen(["explorer", str(path)])
+        else:
+            subprocess.Popen(["xdg-open", str(path)])
+
+    def _reveal_path(self, path: Path) -> None:
         if sys.platform == "win32":
             subprocess.Popen(["explorer", "/select,", str(path)])
         else:
@@ -418,11 +461,12 @@ class PowerRenameApp:
 
     # ------------------------------------------------------------ 清单重命名
     def _export_rename_list(self) -> None:
-        """把当前文件列表导出为清单文本（无规则=模板，有规则=含新名），可回填后导入。"""
-        if not self.entries:
+        """把当前可改名列表导出为清单文本（无规则=模板，有规则=含新名），可回填后导入。"""
+        entries = self._renameable_entries()
+        if not entries:
             messagebox.showinfo("导出清单", "请先加载文件夹（当前列表为空）。")
             return
-        text = build_export_text(self.entries, self.rules)
+        text = build_export_text(entries, self.rules)
         path = filedialog.asksaveasfilename(
             title="导出文件清单",
             defaultextension=".txt",
@@ -566,7 +610,7 @@ class PowerRenameApp:
         if not p.is_dir():
             self._set_status("无效的文件夹路径")
             return
-        self.entries = load_entries(
+        self.tree_root = load_tree(
             p,
             recursive=self.recursive_var.get(),
             include_files=self.only_files_var.get(),
@@ -575,8 +619,17 @@ class PowerRenameApp:
             exc_text=self.exc_var.get().strip(),
             use_regex=self.regex_var.get(),
         )
+        self.renameable_nodes = [n for n in flatten_tree(self.tree_root) if n.renameable]
         self.refresh_preview()
-        self._set_status(f"已加载 {len(self.entries)} 项，来自 {p}")
+        n_files = sum(1 for n in self.renameable_nodes if not n.is_dir)
+        n_dirs = sum(1 for n in self.renameable_nodes if n.is_dir)
+        parts = []
+        if n_files:
+            parts.append(f"{n_files} 个文件")
+        if n_dirs:
+            parts.append(f"{n_dirs} 个文件夹")
+        self._set_status(f"已加载结构节点 {len(flatten_tree(self.tree_root))} 个"
+                         f"（可改名：{'、'.join(parts) if parts else '无'}），来自 {p}")
 
     def _apply(self) -> None:
         targets = [it for it in self.preview if it.status == STATUS_OK]
