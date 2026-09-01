@@ -12,6 +12,9 @@
 //!   │ 状态栏   [应用] [撤销]                      │
 //!   └────────────────────────────────────────────┘
 
+// 发布版不挂控制台窗口（避免运行时出现黑色终端）；debug 构建保留便于看输出
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
@@ -563,8 +566,54 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "PowerRenamePy Rust",
         options,
-        Box::new(|_cc| Ok(Box::new(RenameApp::new()))),
+        Box::new(|cc| {
+            install_chinese_font(&cc.egui_ctx);
+            Ok(Box::new(RenameApp::new()))
+        }),
     )
+}
+
+/// 安装中文字体（egui 默认字体不含中文，需加载系统字体，否则中文显示为乱码/方框）。
+fn install_chinese_font(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+
+    // 按优先级尝试常见的 Windows 中文字体文件
+    let candidates = [
+        "C:/Windows/Fonts/msyh.ttc",    // 微软雅黑
+        "C:/Windows/Fonts/msyh.ttf",
+        "C:/Windows/Fonts/simhei.ttf",  // 黑体
+        "C:/Windows/Fonts/simsun.ttc",  // 宋体
+        "C:/Windows/Fonts/simkai.ttf",  // 楷体
+    ];
+    let mut installed = false;
+    for path in candidates {
+        if let Ok(bytes) = std::fs::read(path) {
+            fonts.font_data.insert(
+                "chinese".to_owned(),
+                egui::FontData::from_owned(bytes).into(),
+            );
+            installed = true;
+            break;
+        }
+    }
+    if !installed {
+        // 非 Windows 或找不到中文字体：静默跳过（英文界面仍可用）
+        return;
+    }
+
+    // 把中文字体放进比例字体族的最高优先级（fallback 顺序：中文 → Ubuntu-Light 等）
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(0, "chinese".to_owned());
+    fonts
+        .families
+        .entry(egui::FontFamily::Monospace)
+        .or_default()
+        .push("chinese".to_owned());
+
+    ctx.set_fonts(fonts);
 }
 
 /// 文本解码：UTF-8 BOM / UTF-8 优先，失败回退 GBK（Windows 常见中文编码）。
