@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-CLI 入口自动化测试。
+CLI 入口自动化测试（精简版：只覆盖「按清单重命名」）。
 
 运行（在项目根目录）：python -m tests.test_cli
-覆盖：预览 dry-run / 真正执行 / 方案加载 / 清单导入 / 内联规则 / 目录筛选 / .py 入口
+覆盖：预览 dry-run / 真正执行 / 清单缺失 / 清单无有效条目 / .py 入口
 """
 
 from __future__ import annotations
@@ -19,14 +19,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import cli  # noqa: E402
-from rename_engine import RULE_LIST, RULE_PREFIX, make_rule, serialize_rules  # noqa: E402
 
 
 def run_cli(argv):
-    """调用 cli.main()，返回 (exit_code, stdout, stderr)。"""
+    """调用 cli.main()，返回 (exit_code, stdout, stderr)。argparse 缺参抛 SystemExit。"""
     buf_out, buf_err = io.StringIO(), io.StringIO()
+    code = 0
     with redirect_stdout(buf_out), redirect_stderr(buf_err):
-        code = cli.main(argv)
+        try:
+            code = cli.main(argv)
+        except SystemExit as exc:  # argparse 用法错误
+            code = exc.code if isinstance(exc.code, int) else 2
     return code, buf_out.getvalue(), buf_err.getvalue()
 
 
@@ -39,92 +42,69 @@ class TestCli(unittest.TestCase):
             (self.root / n).write_text("x", encoding="utf-8")
         self.dir = str(self.root)
 
+    def _mk_list(self, text):
+        lst = self.root / "rename_list.txt"
+        lst.write_text(text, encoding="utf-8")
+        return str(lst)
+
     def test_dry_run_does_not_rename(self):
-        code, out, err = run_cli([self.dir, "--prefix", "IMG_"])
+        lst = self._mk_list("a.txt -> aa.txt\nb.txt -> bb.txt\n")
+        code, out, err = run_cli([self.dir, "--list", lst])
         self.assertEqual(code, 0, err)
-        self.assertIn("IMG_a.txt", out)
+        self.assertIn("aa.txt", out)
         self.assertIn("预览模式（dry-run）", out)
         # 文件未变
         self.assertTrue((self.root / "a.txt").exists())
-        self.assertFalse((self.root / "IMG_a.txt").exists())
+        self.assertFalse((self.root / "aa.txt").exists())
 
     def test_apply_renames(self):
-        code, out, err = run_cli([self.dir, "--prefix", "IMG_", "--apply"])
+        lst = self._mk_list("a.txt -> aa.txt\nb.txt -> bb.txt\n")
+        code, out, err = run_cli([self.dir, "--list", lst, "--apply"])
         self.assertEqual(code, 0, err)
         self.assertIn("已重命名 2 项", out)
-        self.assertTrue((self.root / "IMG_a.txt").exists())
-        self.assertTrue((self.root / "IMG_b.txt").exists())
-        self.assertFalse((self.root / "a.txt").exists())
-
-    def test_preset_and_list(self):
-        # 方案文件：前缀
-        preset = self.root / "p.json"
-        preset.write_text(serialize_rules([make_rule(RULE_PREFIX, text="P_")]),
-                          encoding="utf-8")
-        # 清单文件：改名
-        lst = self.root / "m.txt"
-        lst.write_text("a.txt -> aa.txt\n", encoding="utf-8")
-        code, out, err = run_cli([self.dir, "--preset", str(preset),
-                                  "--list", str(lst), "--apply"])
-        self.assertEqual(code, 0, err)
-        # 前缀 + 清单：命中 a.txt -> aa.txt（清单覆盖前缀）；b.txt 未命中 -> P_b.txt
         self.assertTrue((self.root / "aa.txt").exists())
-        self.assertTrue((self.root / "P_b.txt").exists())
+        self.assertTrue((self.root / "bb.txt").exists())
         self.assertFalse((self.root / "a.txt").exists())
 
-    def test_inline_rules_number(self):
-        code, out, err = run_cli([self.dir, "--prefix", "N_", "--number",
-                                  "--start", "10", "--step", "2", "--digits", "3",
-                                  "--apply"])
+    def test_partial_match_keeps_unmatched(self):
+        """清单只命中部分文件：未匹配项保持原名、跳过。"""
+        lst = self._mk_list("a.txt -> aa.txt\n")
+        code, out, err = run_cli([self.dir, "--list", lst, "--apply"])
         self.assertEqual(code, 0, err)
-        names = sorted(p.name for p in self.root.iterdir() if p.is_file())
-        # 前缀 + 后缀编号叠加：N_a.txt -> N_a 010.txt？否——编号规则插入主名后/扩展名前
-        # 实际顺序：prefix("N_") -> number(suffix)  => "N_a 010.txt"
-        self.assertEqual(names, ["N_a 010.txt", "N_b 012.txt"], names)
+        self.assertIn("已重命名 1 项", out)
+        self.assertTrue((self.root / "aa.txt").exists())
+        self.assertTrue((self.root / "b.txt").exists())  # 未匹配保持原名
 
-    def test_filter_include_exclude(self):
-        code, out, err = run_cli([self.dir, "--include", "a", "--prefix", "X_"])
+    def test_gbk_list_encoding(self):
+        """GBK 编码清单也能解析（自动编码检测）。"""
+        lst = self.root / "gbk_list.txt"
+        lst.write_bytes("a.txt -> 甲.txt\n".encode("gbk"))
+        code, out, err = run_cli([self.dir, "--list", str(lst), "--apply"])
         self.assertEqual(code, 0, err)
-        self.assertIn("X_a.txt", out)
-        self.assertNotIn("X_b.txt", out)
+        self.assertTrue((self.root / "甲.txt").exists())
 
-    def test_export_template_no_rules(self):
-        """无规则导出模板：每行「原名 → 」，可直接回填再导入。"""
-        out_file = self.root / "list.txt"
-        code, out, err = run_cli([self.dir, "--export", str(out_file)])
-        self.assertEqual(code, 0, err)
-        self.assertIn("已导出", out)
-        text = out_file.read_text(encoding="utf-8")
-        lines = [l for l in text.splitlines() if l.strip()]
-        self.assertEqual(len(lines), 2, text)
-        self.assertTrue(all(l.endswith(" → ") for l in lines), text)
-        self.assertTrue(any(l.startswith("a.txt") for l in lines))
-
-    def test_export_with_rules_shows_new_names(self):
-        """有规则导出：含新名预览（dry-run 预览仍显示）。"""
-        out_file = self.root / "list2.txt"
-        code, out, err = run_cli([self.dir, "--export", str(out_file),
-                                  "--prefix", "P_"])
-        self.assertEqual(code, 0, err)
-        text = out_file.read_text(encoding="utf-8")
-        self.assertIn("a.txt → P_a.txt", text)
-        self.assertIn("b.txt → P_b.txt", text)
-
-    def test_export_conflicts_apply(self):
-        code, _, err = run_cli([self.dir, "--export", str(self.root / "x.txt"),
-                                "--apply"])
+    def test_missing_list_file(self):
+        code, _, err = run_cli([self.dir, "--list", str(self.root / "nope.txt")])
         self.assertEqual(code, 1)
-        self.assertIn("不能同时使用", err)
+        self.assertIn("读取清单失败", err)
+
+    def test_list_required(self):
+        """不带 --list 报错。"""
+        code, _, err = run_cli([self.dir])
+        self.assertEqual(code, 2)  # argparse 用法错误
+        self.assertIn("--list", err)
+
+    def test_empty_list(self):
+        lst = self._mk_list("# 只有注释\n")
+        code, _, err = run_cli([self.dir, "--list", lst])
+        self.assertEqual(code, 1)
+        self.assertIn("清单中没有有效", err)
 
     def test_missing_dir(self):
-        code, _, err = run_cli([str(self.root / "nope"), "--prefix", "X"])
+        lst = self._mk_list("a.txt -> aa.txt\n")
+        code, _, err = run_cli([str(self.root / "nope"), "--list", lst])
         self.assertEqual(code, 1)
         self.assertIn("目录不存在", err)
-
-    def test_no_rules(self):
-        code, _, err = run_cli([self.dir])
-        self.assertEqual(code, 1)
-        self.assertIn("没有指定任何规则", err)
 
 
 if __name__ == "__main__":

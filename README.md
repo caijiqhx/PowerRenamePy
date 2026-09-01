@@ -41,7 +41,7 @@ PowerRenamePy/
 │   └── rename_engine.py     # 核心引擎：规则、转换、预览、冲突检测、执行、撤销
 ├── tests/
 │   ├── test_engine.py       # 引擎自动化测试（41 个用例）
-│   └── test_cli.py          # CLI 自动化测试（10 个用例）
+│   └── test_cli.py          # CLI 自动化测试（8 个用例）
 ├── scripts/                 # 构建与工具脚本
 │   ├── build_arm64.sh       # ARM64 Linux 目标机一键打包脚本
 │   ├── build_arm64_docker.bat  # Windows 上一键执行 Docker 模拟打包
@@ -75,20 +75,15 @@ python src/main.py
 
 ### 方式三：命令行（CLI，无需 GUI）
 
-复用核心引擎，适合脚本化 / 服务器批量改名。默认**预览**（dry-run），加 `--apply` 才真正执行：
+精简版：只支持**按清单重命名**。复用核心引擎，默认**预览**（dry-run），加 `--apply` 才真正执行：
 
 ```bash
-python src/cli.py /path/to/dir --prefix IMG_            # 预览（不实际改名）
-python src/cli.py /path/to/dir --prefix IMG_ --apply    # 真正执行
-python src/cli.py /path/to/dir --list rename_list.txt   # 按清单改名
-python src/cli.py /path/to/dir --preset preset.json --apply  # 加载 GUI 保存的方案
-python src/cli.py /path/to/dir --export list.txt        # 导出清单（无规则=模板，有规则=含新名）
+python src/cli.py /path/to/dir --list rename_list.txt            # 预览（不实际改名）
+python src/cli.py /path/to/dir --list rename_list.txt --apply    # 真正执行
 ```
 
-支持的内联规则：`--prefix` `--suffix` `--replace OLD NEW` `--regex PAT REPL`
-`--lower/--upper/--title` `--ext EXT` `--number`（配 `--start/--step/--digits/--sep`）
-`--strip CHARS` `--trim`（配 `--underscore`）。目录筛选：`--include/--exclude`
-`--recursive/--no-recursive` `--only-files/--dirs` `--regex-filter`。
+> 清单文件每行一条「原名 → 新名」，支持分隔符 `→` / `->` / `=>` / Tab / 逗号 / 分号 / 竖线 / 连续空格，
+> 自动识别 UTF-8 / GBK 编码；未匹配清单的文件保持原名。
 
 ## 打包为 exe（在 Windows 上）
 
@@ -182,7 +177,7 @@ scripts\build_arm64_docker.bat
 
 ```bash
 python -m unittest tests.test_engine   # 41 个用例：规则转换 / 编号索引 / 作用范围 / 冲突 / 互换重命名 / 撤销 / 清单映射 / 方案序列化 / 导出清单 / 树形加载
-python -m unittest tests.test_cli      # 10 个用例：dry-run / 执行 / 方案 / 清单 / 内联规则 / 筛选 / 导出
+python -m unittest tests.test_cli      # 8 个用例：dry-run / 执行 / 部分命中 / GBK 清单 / 缺参 / 空清单 / 目录不存在
 ```
 
 ## 说明与限制
