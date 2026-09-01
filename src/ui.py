@@ -29,6 +29,7 @@ from rename_engine import (
     RenameRule,
     UndoManager,
     apply_renames,
+    build_export_text,
     compute_preview,
     default_rule,
     load_entries,
@@ -84,6 +85,7 @@ class PowerRenameApp:
         ttk.Button(bar, text="浏览…", command=self._browse).pack(side=tk.LEFT)
         ttk.Button(bar, text="加载", command=self.load_files).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(bar, text="导入清单…", command=self._import_rename_list).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(bar, text="导出清单…", command=self._export_rename_list).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Separator(bar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=6)
         ttk.Button(bar, text="保存方案…", command=self._save_preset).pack(side=tk.LEFT)
         ttk.Button(bar, text="加载方案…", command=self._load_preset).pack(side=tk.LEFT, padx=(6, 0))
@@ -415,6 +417,30 @@ class PowerRenameApp:
             self.load_files()
 
     # ------------------------------------------------------------ 清单重命名
+    def _export_rename_list(self) -> None:
+        """把当前文件列表导出为清单文本（无规则=模板，有规则=含新名），可回填后导入。"""
+        if not self.entries:
+            messagebox.showinfo("导出清单", "请先加载文件夹（当前列表为空）。")
+            return
+        text = build_export_text(self.entries, self.rules)
+        path = filedialog.asksaveasfilename(
+            title="导出文件清单",
+            defaultextension=".txt",
+            filetypes=[("文本", "*.txt"), ("CSV", "*.csv"), ("所有文件", "*.*")],
+            initialfile="rename_list.txt",
+            initialdir=self.dir_var.get() or str(Path.home()),
+        )
+        if not path:
+            return
+        try:
+            Path(path).write_text(text, encoding="utf-8")
+        except OSError as exc:
+            messagebox.showerror("导出清单", f"写入失败：\n{exc}")
+            return
+        n = len([l for l in text.splitlines() if l.strip()])
+        mode = "含新名预览" if self.rules else "模板"
+        self._set_status(f"已导出 {n} 项清单（{mode}）：{Path(path).name}")
+
     def _import_rename_list(self) -> None:
         """选择清单文件（txt/csv）→ 解析为 {原名: 新名} 映射 → 设置/替换清单规则。"""
         raw_path = filedialog.askopenfilename(

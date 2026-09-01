@@ -88,6 +88,34 @@ class TestCli(unittest.TestCase):
         self.assertIn("X_a.txt", out)
         self.assertNotIn("X_b.txt", out)
 
+    def test_export_template_no_rules(self):
+        """无规则导出模板：每行「原名 → 」，可直接回填再导入。"""
+        out_file = self.root / "list.txt"
+        code, out, err = run_cli([self.dir, "--export", str(out_file)])
+        self.assertEqual(code, 0, err)
+        self.assertIn("已导出", out)
+        text = out_file.read_text(encoding="utf-8")
+        lines = [l for l in text.splitlines() if l.strip()]
+        self.assertEqual(len(lines), 2, text)
+        self.assertTrue(all(l.endswith(" → ") for l in lines), text)
+        self.assertTrue(any(l.startswith("a.txt") for l in lines))
+
+    def test_export_with_rules_shows_new_names(self):
+        """有规则导出：含新名预览（dry-run 预览仍显示）。"""
+        out_file = self.root / "list2.txt"
+        code, out, err = run_cli([self.dir, "--export", str(out_file),
+                                  "--prefix", "P_"])
+        self.assertEqual(code, 0, err)
+        text = out_file.read_text(encoding="utf-8")
+        self.assertIn("a.txt → P_a.txt", text)
+        self.assertIn("b.txt → P_b.txt", text)
+
+    def test_export_conflicts_apply(self):
+        code, _, err = run_cli([self.dir, "--export", str(self.root / "x.txt"),
+                                "--apply"])
+        self.assertEqual(code, 1)
+        self.assertIn("不能同时使用", err)
+
     def test_missing_dir(self):
         code, _, err = run_cli([str(self.root / "nope"), "--prefix", "X"])
         self.assertEqual(code, 1)

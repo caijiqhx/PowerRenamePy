@@ -21,6 +21,7 @@
   | 移除字符 | 逐个移除指定字符（如 `-()`） |
   | 压缩空白 | 合并连续空白；可选转下划线 |
   | 按清单重命名 | 导入 `原名→新名` 清单（txt/csv），按映射逐项改名；未匹配项保持原名 |
+- **导出文件清单**：一键导出当前列表为 `原名 → 新名` 清单（无规则时为模板，回填后可直接导入），与「导入清单」形成闭环
 - **实时预览**：输入规则即时刷新，状态着色区分 就绪 / 冲突 / 无变化 / 错误，附说明
 - **冲突与安全检查**：目标重名、目标已在磁盘存在、非法字符（`<>:"/\|?*`）、空结果
 - **两阶段重命名**：先全部改临时名再改目标名，支持 `a↔b` 互换和链式改名，出错自动回滚
@@ -38,8 +39,8 @@ PowerRenamePy/
 │   ├── ui.py                # tkinter 图形界面
 │   └── rename_engine.py     # 核心引擎：规则、转换、预览、冲突检测、执行、撤销
 ├── tests/
-│   ├── test_engine.py       # 引擎自动化测试（30 个用例）
-│   └── test_cli.py          # CLI 自动化测试（7 个用例）
+│   ├── test_engine.py       # 引擎自动化测试（33 个用例）
+│   └── test_cli.py          # CLI 自动化测试（10 个用例）
 ├── scripts/                 # 构建与工具脚本
 │   ├── build_arm64.sh       # ARM64 Linux 目标机一键打包脚本
 │   ├── build_arm64_docker.bat  # Windows 上一键执行 Docker 模拟打包
@@ -80,6 +81,7 @@ python src/cli.py /path/to/dir --prefix IMG_            # 预览（不实际改�
 python src/cli.py /path/to/dir --prefix IMG_ --apply    # 真正执行
 python src/cli.py /path/to/dir --list rename_list.txt   # 按清单改名
 python src/cli.py /path/to/dir --preset preset.json --apply  # 加载 GUI 保存的方案
+python src/cli.py /path/to/dir --export list.txt        # 导出清单（无规则=模板，有规则=含新名）
 ```
 
 支持的内联规则：`--prefix` `--suffix` `--replace OLD NEW` `--regex PAT REPL`
@@ -158,9 +160,11 @@ scripts\build_arm64_docker.bat
 3. **按清单重命名**：点击工具栏「导入清单…」，选择 txt/csv 文件，每行一条 `原名 → 新名`；
    支持分隔符 `→` / `->` / `=>` / Tab / 逗号 / 分号 / 竖线 / 连续空格，自动识别 UTF-8 / GBK 编码。
    导入后自动添加一条"按清单重命名"规则；未匹配清单的文件保持原名
-4. **保存/加载规则方案**：点「保存方案…」将当前规则存为 `.json`，下次「加载方案…」一键恢复
-5. 右侧预览即时更新：绿色=就绪，红色=冲突/错误，灰色=无变化
-6. 确认无误后点击「应用重命名」；如需恢复，点击「撤销上次」
+4. **导出文件清单**：点击工具栏「导出清单…」→ 无规则时导出 `原名 → ` 模板，有规则时导出含新名的清单。
+   可回填新名后再「导入清单…」，形成「导出→填名→导入→应用」闭环
+5. **保存/加载规则方案**：点「保存方案…」将当前规则存为 `.json`，下次「加载方案…」一键恢复
+6. 右侧预览即时更新：绿色=就绪，红色=冲突/错误，灰色=无变化
+7. 确认无误后点击「应用重命名」；如需恢复，点击「撤销上次」
 
 ## 实现原理
 
@@ -176,8 +180,8 @@ scripts\build_arm64_docker.bat
 ## 测试
 
 ```bash
-python -m unittest tests.test_engine   # 30 个用例：规则转换 / 编号索引 / 作用范围 / 冲突 / 互换重命名 / 撤销 / 清单映射 / 方案序列化
-python -m unittest tests.test_cli      # 7 个用例：dry-run / 执行 / 方案 / 清单 / 内联规则 / 筛选
+python -m unittest tests.test_engine   # 33 个用例：规则转换 / 编号索引 / 作用范围 / 冲突 / 互换重命名 / 撤销 / 清单映射 / 方案序列化 / 导出清单
+python -m unittest tests.test_cli      # 10 个用例：dry-run / 执行 / 方案 / 清单 / 内联规则 / 筛选 / 导出
 ```
 
 ## 说明与限制

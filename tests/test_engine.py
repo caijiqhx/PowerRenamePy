@@ -33,6 +33,7 @@ from src.rename_engine import (
     STATUS_UNCHANGED,
     UndoManager,
     apply_renames,
+    build_export_text,
     compute_preview,
     load_entries,
     make_rule,
@@ -348,6 +349,35 @@ class TestSerializeRules(unittest.TestCase):
         rules = deserialize_rules(
             '[{"rule_type":"prefix","params":{"text":"hi","evil":"x"}}]')
         self.assertEqual(rules[0].params, {"text": "hi"})
+
+
+class TestExport(unittest.TestCase):
+    def _mk_entries(self, names):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            for n in names:
+                (root / n).write_text("x", encoding="utf-8")
+            return load_entries(root, recursive=False)
+
+    def test_template_no_rules(self):
+        entries = self._mk_entries(["a.txt", "b.txt"])
+        text = build_export_text(entries)
+        lines = [l for l in text.splitlines() if l.strip()]
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[0].endswith(" → "))
+        self.assertTrue(any(l.startswith("a.txt") for l in lines))
+
+    def test_with_rules_shows_new_names(self):
+        entries = self._mk_entries(["a.txt", "b.txt"])
+        r = make_rule(RULE_PREFIX, text="pre_")
+        text = build_export_text(entries, [r])
+        lines = [l for l in text.splitlines() if l.strip()]
+        self.assertIn("a.txt → pre_a.txt", lines)
+        self.assertIn("b.txt → pre_b.txt", lines)
+
+    def test_empty(self):
+        self.assertEqual(build_export_text([]), "")
+        self.assertEqual(build_export_text([], []), "")
 
 
 if __name__ == "__main__":

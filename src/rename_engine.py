@@ -423,6 +423,30 @@ def transform_name(name: str, rules: List[RenameRule], index: int = 0) -> str:
     return name
 
 
+# ---------------------------------------------------------------- 导出清单
+def build_export_text(entries: List[FileEntry], rules: Optional[List[RenameRule]] = None) -> str:
+    """
+    生成供「导入清单」使用的清单文本。
+
+    - rules 为空：每行「原名 → 」（模板，填上新名即可导入）
+    - rules 非空：每行「原名 → 新名」，新名为规则预览结果（忽略 conflict/error 项）
+    返回文本以 \n 结尾；无条目时返回空字符串。
+    """
+    if not entries:
+        return ""
+    if rules:
+        preview = compute_preview(entries, rules)
+        lines = []
+        for it in preview:
+            if it.status == STATUS_OK:
+                lines.append(f"{it.old_name} → {it.new_name}")
+            else:
+                lines.append(f"{it.old_name} → ")
+    else:
+        lines = [f"{e.name} → " for e in entries]
+    return "\n".join(lines) + "\n"
+
+
 # ---------------------------------------------------------------- 预览与冲突检测
 def compute_preview(entries: List[FileEntry], rules: List[RenameRule]) -> List[PreviewItem]:
     results: List[PreviewItem] = []

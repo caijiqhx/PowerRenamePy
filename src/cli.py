@@ -34,6 +34,7 @@ from rename_engine import (
     STATUS_LABELS,
     STATUS_OK,
     apply_renames,
+    build_export_text,
     compute_preview,
     deserialize_rules,
     load_entries,
@@ -94,6 +95,9 @@ def build_parser() -> argparse.ArgumentParser:
     # ---- 执行 ----
     p.add_argument("--apply", action="store_true",
                    help="真正执行重命名（默认预览 dry-run）")
+    p.add_argument("--export", metavar="FILE",
+                   help="导出文件清单到 FILE（无规则=填新名的模板，有规则=含新名）；"
+                        "不与 --apply 共用")
     return p
 
 
@@ -162,7 +166,7 @@ def main(argv: list | None = None) -> int:
         return 0
 
     rules = build_rules(args)
-    if not rules:
+    if not rules and not args.export:
         print("错误：没有指定任何规则（可用 --preset / --list / --prefix 等，或 -h 查看帮助）。",
               file=sys.stderr)
         return 1
@@ -179,6 +183,21 @@ def main(argv: list | None = None) -> int:
         arrow = " -> " if it.new_name != it.old_name else "    "
         print(f"{it.old_name}{arrow}{it.new_name}"
               f"  [{STATUS_LABELS.get(it.status, it.status)}]")
+
+    if args.export:
+        # 导出模式：无需规则也可用（无规则导出模板）；不与 --apply 共用
+        if args.apply:
+            print("错误：--export 与 --apply 不能同时使用。", file=sys.stderr)
+            return 1
+        text = build_export_text(entries, rules)
+        try:
+            Path(args.export).write_text(text, encoding="utf-8")
+        except OSError as exc:
+            print(f"错误：导出失败：{exc}", file=sys.stderr)
+            return 1
+        n = len([l for l in text.splitlines() if l.strip()])
+        print(f"已导出 {n} 项清单到 {args.export}")
+        return 0
 
     if not args.apply:
         print("-" * 60)
