@@ -306,8 +306,16 @@ impl RenameApp {
         let error = self.preview_by_path.values().filter(|r| r.status == PreviewStatus::Error).count();
         let unchanged = self.preview_by_path.values().filter(|r| r.status == PreviewStatus::Unchanged).count();
         let total = self.preview_by_path.len();
+        // 节点总数（树全节点，含根目录；对齐 Python flatten_tree(tree_root)）
+        let mut node_count = 0usize;
+        let mut stack2: Vec<&TreeNode> = vec![self.tree.as_ref().unwrap()];
+        while let Some(n) = stack2.pop() {
+            node_count += 1;
+            stack2.extend(n.children.iter());
+        }
+        let skipped = node_count.saturating_sub(total);
         self.status_msg = format!(
-            "共 {total} 项可改名 | 将重命名 {ok} | 冲突 {conflict} | 错误 {error} | 无变化 {unchanged}"
+            "共 {node_count} 个节点 | 可改名 {total} | 将重命名 {ok} | 冲突 {conflict} | 错误 {error} | 无变化 {unchanged} | 跳过 {skipped}"
         );
     }
 
@@ -895,40 +903,52 @@ fn render_tree_rows(
 
     // 文件行
     let row_info = by_path.get(&node.path);
+    // 不在预览映射 → 该节点被筛选跳过（不可改名），与 Python「跳过」标签一致
+    let is_skipped = row_info.is_none();
     let (new_name, status, note) = match row_info {
         Some(r) => (r.new_name.clone(), r.status, r.note.clone()),
-        None => (node.name.clone(), PreviewStatus::Unchanged, String::new()),
+        None => (String::new(), PreviewStatus::Unchanged, String::new()),
     };
-    let color = match status {
-        PreviewStatus::Ok => egui::Color32::from_rgb(0x2e, 0x8b, 0x57),
-        PreviewStatus::Conflict => egui::Color32::from_rgb(0xc0, 0x39, 0x2b),
-        PreviewStatus::Error => egui::Color32::from_rgb(0x8b, 0x00, 0x00),
-        PreviewStatus::Unchanged => egui::Color32::GRAY,
+    let color = if is_skipped {
+        egui::Color32::from_rgb(0xA0, 0xA0, 0xA0) // 更浅的灰
+    } else {
+        match status {
+            PreviewStatus::Ok => egui::Color32::from_rgb(0x2e, 0x8b, 0x57),
+            PreviewStatus::Conflict => egui::Color32::from_rgb(0xc0, 0x39, 0x2b),
+            PreviewStatus::Error => egui::Color32::from_rgb(0x8b, 0x00, 0x00),
+            PreviewStatus::Unchanged => egui::Color32::GRAY,
+        }
     };
-    let status_label = match status {
-        PreviewStatus::Ok => "就绪",
-        PreviewStatus::Unchanged => "无变化",
-        PreviewStatus::Conflict => "冲突",
-        PreviewStatus::Error => "错误",
+    let status_label = if is_skipped {
+        "跳过"
+    } else {
+        match status {
+            PreviewStatus::Ok => "就绪",
+            PreviewStatus::Unchanged => "无变化",
+            PreviewStatus::Conflict => "冲突",
+            PreviewStatus::Error => "错误",
+        }
     };
     body.row(22.0, |mut row| {
         row.col(|ui| {
             ui.horizontal(|ui| {
                 ui.add_space(depth as f32 * 16.0);
-                let label = ui.label(format!("📄 {}", node.name));
+                let label = ui.colored_label(color, format!("📄 {}", node.name));
                 if label.secondary_clicked() {
                     *action = PreviewAction::Reveal(node.path.clone());
                 }
             });
         });
         row.col(|ui| {
-            ui.colored_label(color, new_name);
+            if !is_skipped {
+                ui.colored_label(color, new_name);
+            }
         });
         row.col(|ui| {
             ui.label(status_label);
         });
         row.col(|ui| {
-            if !note.is_empty() {
+            if !is_skipped && !note.is_empty() {
                 ui.label(note);
             }
         });
