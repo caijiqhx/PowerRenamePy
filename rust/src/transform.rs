@@ -63,20 +63,18 @@ fn split_ext(name: &str) -> (String, String) {
     }
 }
 
-/// 字面量查找替换；case_sensitive=false 时忽略大小写（不区分大小写的替换）。
+/// 字面量查找替换；case_sensitive=false 时忽略大小写。
 fn apply_replace(target: &str, search: &str, replace: &str, case_sensitive: bool) -> String {
     if case_sensitive {
         return target.replace(search, replace);
     }
 
-    // 忽略大小写：使用 regex crate（ASCII case-insensitive），替换为字面量 replace。
-    // 注意：Python 版用 re.sub(re.escape(search), lambda: repl, flags=IGNORECASE)，
-    // 语义为"把 search 的所有出现（不分大小写）替换成 replace"。
-    let pattern = match regex::escape(search) {
-        // 构建不区分大小写匹配
-        p => format!("(?i:{p})"),
-    };
-    match regex::Regex::new(&pattern) {
+    // 忽略大小写：用 RegexBuilder 构建大小写不敏感匹配（比 (?i:...) 拼接更清晰）
+    let pattern = regex::escape(search);
+    let re = regex::RegexBuilder::new(&pattern)
+        .case_insensitive(true)
+        .build();
+    match re {
         Ok(re) => re.replace_all(target, replace).into_owned(),
         Err(_) => target.to_string(),
     }

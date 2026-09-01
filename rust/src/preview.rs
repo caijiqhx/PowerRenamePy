@@ -49,7 +49,7 @@ pub fn compute_preview(entries: &[FileEntry], rules: &[Rule]) -> Vec<PreviewItem
     let transformed: Vec<String> = entries
         .iter()
         .enumerate()
-        .map(|(i, e)| transform_name(&e.name, rules)) // index 参数 Python 用于编号规则，本项目无 → 忽略
+        .map(|(_i, e)| transform_name(&e.name, rules)) // index 参数 Python 用于编号规则，本项目无 → 忽略
         .collect();
 
     let mut statuses = vec![PreviewStatus::Ok; n];

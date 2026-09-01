@@ -1,7 +1,12 @@
-//! 文件系统目录树加载（对齐 Python 版 load_tree / flatten_tree / load_entries）。
+//! 文件系统目录树加载（基于 walkdir，Rust 惯用实现）。
+//!
+//! 语义对齐 Python 版 load_tree / flatten_tree / load_entries：
+//! - 目录节点始终保留（结构展示），renameable 决定是否参与改名
+//! - 递归/深度由 walkdir 的 min_depth/max_depth 控制
+//! - 排序：目录优先，其次名称不区分大小写
 
-use std::fs;
 use std::path::{Path, PathBuf};
+use walkdir::WalkDir;
 
 /// 树节点：目录始终作为结构节点保留；renameable 决定是否参与改名。
 #[derive(Debug, Clone)]
@@ -45,73 +50,130 @@ impl Default for LoadOptions {
     }
 }
 
-/// 加载目录树。根节点始终保留、renameable=false；子目录仅 include_dirs 且名称筛选通过才可改名；
-/// 文件仅 include_files 且名称筛选通过才可改名；递归遍历受 recursive/深度控制。
+/// 名称是否通过包含/排除筛选（对齐 Python name_ok）。
+fn name_ok(name: &str, opts: &LoadOptions) -> bool {
+    if !opts.inc_text.is_empty() && !match_text(name, &opts.inc_text, opts.use_regex) {
+        return false;
+    }
+    if !opts.exc_text.is_empty() && match_text(name, &opts.exc_text, opts.use_regex) {
+        return false;
+    }
+    true
+}
+
+fn match_text(name: &str, text: &str, use_regex: bool) -> bool {
+    if use_regex {
+        fancy_regex::Regex::new(text).map(|re| re.is_match(name).unwrap_or(false)).unwrap_or(false)
+    } else {
+        name.contains(text)
+    }
+}
+
+/// 加载目录树。根节点始终保留、renameable=false；
+/// 子目录仅 include_dirs 且名称筛选通过才可改名；文件仅 include_files 且筛选通过。
 pub fn load_tree(dirpath: &Path, opts: &LoadOptions) -> TreeNode {
-    let name = dirpath
+    let root_name = dirpath
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| dirpath.to_string_lossy().into_owned());
-    let root = TreeNode {
+
+    let max_depth = if opts.recursive { usize::MAX } else { 1 }; // 深度 1 = 只读直接子项
+
+    // 先收集全部节点 path，再建树
+    let mut nodes: Vec<(PathBuf, bool)> = Vec::new(); // (path, is_dir)
+    for entry in WalkDir::new(dirpath).min_depth(1).max_depth(max_depth).follow_links(false) {
+        let Ok(entry) = entry else { continue }; // 权限等错误跳过（对齐 Python OSError 跳过）
+        let is_dir = entry.file_type().is_dir();
+        nodes.push((entry.into_path(), is_dir));
+    }
+
+    // 按（目录优先，名称不区分大小写）排序 —— 对齐 Python sorted(key=(not is_dir, name.lower))
+    nodes.sort_by(|a, b| {
+        let name_a = a.0.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let name_b = b.0.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        (b.1, name_a.to_lowercase()).cmp(&(a.1, name_b.to_lowercase()))
+    });
+    fn insert_into(node: &mut TreeNode, path: &Path, is_dir: bool, opts: &LoadOptions) {
+        let rel = match path.strip_prefix(&node.path) {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        let mut components = rel.components();
+        let Some(first) = components.next() else { return };
+        let name = first.as_os_str().to_string_lossy().into_owned();
+        let child_full = node.path.join(&name);
+
+        if components.next().is_none() {
+            // 直接子项：文件在此决定 renameable；目录统一由 fix_dir_renameable 处理
+            let renameable = !is_dir && opts.include_files && name_ok(&name, opts);
+            let child = TreeNode {
+                path: child_full,
+                name,
+                is_dir,
+                renameable,
+                children: Vec::new(),
+            };
+            if let Some(existing) = node.children.iter_mut().find(|c| c.name == child.name) {
+                existing.path = child.path;
+                existing.is_dir = child.is_dir;
+                existing.renameable = child.renameable;
+            } else {
+                node.children.push(child);
+            }
+        } else {
+            // 多层路径：递归进入/创建中间目录节点
+            if let Some(existing) = node.children.iter_mut().find(|c| c.name == name) {
+                insert_into(existing, path, is_dir, opts);
+            } else {
+                let mut mid = TreeNode {
+                    path: child_full,
+                    name,
+                    is_dir: true,
+                    renameable: false,
+                    children: Vec::new(),
+                };
+                insert_into(&mut mid, path, is_dir, opts);
+                node.children.push(mid);
+            }
+        }
+    }
+
+    let mut root = TreeNode {
         path: dirpath.to_path_buf(),
-        name,
+        name: root_name,
         is_dir: true,
         renameable: false,
         children: Vec::new(),
     };
-    let mut root = root;
-
-    let max_depth = if opts.recursive { -1 } else { 0 };
-
-    fn name_ok(name: &str, opts: &LoadOptions) -> bool {
-        if !opts.inc_text.is_empty() {
-            if !match_text(name, &opts.inc_text, opts.use_regex) {
-                return false;
-            }
-        }
-        if !opts.exc_text.is_empty() {
-            if match_text(name, &opts.exc_text, opts.use_regex) {
-                return false;
-            }
-        }
-        true
+    // walkdir 深度先序输出：父路径必然先于子路径出现，直接逐条插入即可
+    for (p, is_dir) in &nodes {
+        insert_into(&mut root, p, *is_dir, opts);
     }
-
-    fn walk(node: &mut TreeNode, limit_depth: i32, opts: &LoadOptions) {
-        let entries = match fs::read_dir(&node.path) {
-            Ok(it) => it.flatten().collect::<Vec<_>>(),
-            Err(_) => return,
-        };
-        // 排序：目录优先，其次名称不区分大小写（对齐 Python sorted(key=(not is_dir, name.lower)))
-        let mut sorted: Vec<_> = entries.iter().map(|de| (de.path(), de.file_name().to_string_lossy().into_owned())).collect();
-        sorted.sort_by(|a, b| {
-            let a_dir = a.0.is_dir();
-            let b_dir = b.0.is_dir();
-            (b_dir, a.1.to_lowercase()).cmp(&(a_dir, b.1.to_lowercase()))
-        });
-        for (child_path, child_name) in sorted {
-            let is_dir = child_path.is_dir();
-            let mut child = TreeNode {
-                path: child_path,
-                name: child_name.clone(),
-                is_dir,
-                renameable: false,
-                children: Vec::new(),
-            };
-            if is_dir {
-                child.renameable = opts.include_dirs && name_ok(&child_name, opts);
-                if limit_depth != 0 {
-                    walk(&mut child, limit_depth - 1, opts);
-                }
-            } else {
-                child.renameable = opts.include_files && name_ok(&child_name, opts);
-            }
-            node.children.push(child);
-        }
-    }
-
-    walk(&mut root, max_depth, opts);
+    // 每层 children 排序：目录在前，名称不区分大小写（对齐 Python 每层 sorted）
+    sort_children(&mut root);
+    // 目录节点的 renameable：由 include_dirs + name_ok 决定
+    fix_dir_renameable(&mut root, opts);
     root
+}
+
+/// 递归排序每层 children（目录优先，名称不区分大小写）。
+fn sort_children(node: &mut TreeNode) {
+    node.children.sort_by(|a, b| {
+        (b.is_dir, a.name.to_lowercase()).cmp(&(a.is_dir, b.name.to_lowercase()))
+    });
+    for c in &mut node.children {
+        sort_children(c);
+    }
+}
+
+/// 递归修正目录节点的 renameable（目录筛选用自身名字判定）。
+fn fix_dir_renameable(node: &mut TreeNode, opts: &LoadOptions) {
+    for c in &mut node.children {
+        if c.is_dir {
+            c.renameable = opts.include_dirs && name_ok(&c.name, opts);
+            fix_dir_renameable(c, opts);
+        }
+    }
 }
 
 /// 深度展平树（先序：父节点在前，目录优先）。
@@ -123,36 +185,22 @@ pub fn flatten_tree(node: &TreeNode, out: &mut Vec<TreeNode>) {
 }
 
 /// load_entries：加载目录条目并按筛选条件过滤（对齐 Python 版）。
-fn match_text(name: &str, text: &str, use_regex: bool) -> bool {
-    if use_regex {
-        match fancy_regex::Regex::new(text) {
-            Ok(re) => re.is_match(name).unwrap_or(false),
-            Err(_) => false,
-        }
-    } else {
-        name.contains(text)
-    }
-}
-
 pub fn load_entries(dirpath: &Path, opts: &LoadOptions) -> Vec<FileEntry> {
     if !dirpath.is_dir() {
         return Vec::new();
     }
-    let iter: Box<dyn Iterator<Item = PathBuf>> = if opts.recursive {
-        Box::new(recursive_iter(dirpath))
-    } else {
-        Box::new(iterdir(dirpath))
-    };
-
+    let max_depth = if opts.recursive { usize::MAX } else { 1 };
     let mut entries = Vec::new();
-    for path in iter {
-        let is_dir = path.is_dir();
+    for entry in WalkDir::new(dirpath).min_depth(1).max_depth(max_depth).follow_links(false) {
+        let Ok(entry) = entry else { continue };
+        let is_dir = entry.file_type().is_dir();
         if is_dir && !opts.include_dirs {
             continue;
         }
         if !is_dir && !opts.include_files {
             continue;
         }
+        let path = entry.into_path();
         let name = path
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
@@ -165,31 +213,10 @@ pub fn load_entries(dirpath: &Path, opts: &LoadOptions) -> Vec<FileEntry> {
         }
         entries.push(FileEntry { path, name, is_dir });
     }
-    entries.sort_by(|a, b| (b.is_dir, a.name.to_lowercase()).cmp(&(a.is_dir, b.name.to_lowercase())));
+    entries.sort_by(|a, b| {
+        (b.is_dir, a.name.to_lowercase()).cmp(&(a.is_dir, b.name.to_lowercase()))
+    });
     entries
-}
-
-fn iterdir(dirpath: &Path) -> impl Iterator<Item = PathBuf> {
-    fs::read_dir(dirpath)
-        .map(|it| it.flatten().map(|de| de.path()).collect::<Vec<_>>().into_iter())
-        .unwrap_or_else(|_| Vec::new().into_iter())
-}
-
-/// 递归遍历（rglob 语义，深度优先）。
-fn recursive_iter(dirpath: &Path) -> impl Iterator<Item = PathBuf> {
-    let mut out = Vec::new();
-    fn collect(dirpath: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(rd) = fs::read_dir(dirpath) else { return };
-        for de in rd.flatten() {
-            let p = de.path();
-            out.push(p.clone());
-            if p.is_dir() {
-                collect(&p, out);
-            }
-        }
-    }
-    collect(dirpath, &mut out);
-    out.into_iter()
 }
 
 #[cfg(test)]
@@ -224,7 +251,6 @@ mod tests {
         setup(&tmp);
         let opts = LoadOptions::default(); // recursive, include_files
         let root = load_tree(&tmp.join("a"), &opts);
-        // 目录 a 有 b/ root.txt z.txt A.txt；A.txt 排在 z.txt 前（不区分大小写）
         let names: Vec<&str> = root.children.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"b"));
         assert!(names.contains(&"root.txt"));

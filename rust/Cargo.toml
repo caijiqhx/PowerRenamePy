@@ -11,3 +11,4 @@ path = "src/lib.rs"
 [dependencies]
 regex = "1"
 fancy-regex = "0.14"
+walkdir = "2"
