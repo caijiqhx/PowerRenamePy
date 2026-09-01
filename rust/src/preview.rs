@@ -8,7 +8,7 @@ use std::path::Path;
 
 use crate::fs_tree::FileEntry;
 use crate::rules::Rule;
-use crate::transform::transform_name;
+use crate::transform::transform_name_indexed;
 
 /// 预览状态（对齐 Python STATUS_*）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,11 +45,11 @@ pub fn has_invalid_chars(name: &str) -> bool {
 /// 计算预览与冲突检测。
 pub fn compute_preview(entries: &[FileEntry], rules: &[Rule]) -> Vec<PreviewItem> {
     let n = entries.len();
-    // 每个条目只转换一次
+    // 每个条目只转换一次；序号 = 条目在列表中的下标（对齐 Python enumerate 语义）
     let transformed: Vec<String> = entries
         .iter()
         .enumerate()
-        .map(|(_i, e)| transform_name(&e.name, rules)) // index 参数 Python 用于编号规则，本项目无 → 忽略
+        .map(|(i, e)| transform_name_indexed(&e.name, rules, i))
         .collect();
 
     let mut statuses = vec![PreviewStatus::Ok; n];

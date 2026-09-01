@@ -37,6 +37,33 @@ enum RuleForm {
         replace: String,
         scope: usize,
     },
+    Case {
+        mode: usize, // 0=lower 1=upper 2=title 3=capitalize
+        scope: usize,
+    },
+    Prefix {
+        text: String,
+    },
+    Suffix {
+        text: String,
+    },
+    Number {
+        pos: usize, // 0=前缀 1=后缀
+        start: String,
+        step: String,
+        digits: String,
+        sep: String,
+    },
+    Ext {
+        text: String,
+    },
+    Strip {
+        chars: String,
+        scope: usize,
+    },
+    Trim {
+        underscore: bool,
+    },
     List {
         mapping: std::collections::HashMap<String, String>,
     },
@@ -52,6 +79,22 @@ impl RuleForm {
             RuleForm::Regex { pattern, replace, .. } => {
                 format!("正则 [{pattern}] → [{replace}]")
             }
+            RuleForm::Case { mode, .. } => {
+                let names = ["小写", "大写", "Title", "Capitalize"];
+                let m = names.get(*mode).copied().unwrap_or("小写");
+                format!("大小写转换（{m}）")
+            }
+            RuleForm::Prefix { text } => format!("添加前缀 [{text}]"),
+            RuleForm::Suffix { text } => format!("添加后缀 [{text}]"),
+            RuleForm::Number { pos, start, step, digits, sep } => {
+                let p = if *pos == 0 { "前缀" } else { "后缀" };
+                format!("序列编号（{p} 从 {start} 步 {step} {digits}位 分隔[{sep}]）")
+            }
+            RuleForm::Ext { text } => format!("替换扩展名 [{text}]"),
+            RuleForm::Strip { chars, .. } => format!("移除字符 [{chars}]"),
+            RuleForm::Trim { underscore } => {
+                if *underscore { "压缩空白（换下划线）".to_string() } else { "压缩空白".to_string() }
+            }
             RuleForm::List { mapping } => format!("清单 [{} 条映射]", mapping.len()),
         }
     }
@@ -61,6 +104,12 @@ impl RuleForm {
             1 => power_rename::rules::Scope::Stem,
             2 => power_rename::rules::Scope::Ext,
             _ => power_rename::rules::Scope::Full,
+        };
+        let case_mode = |n: usize| match n {
+            1 => power_rename::rules::CaseMode::Upper,
+            2 => power_rename::rules::CaseMode::Title,
+            3 => power_rename::rules::CaseMode::Capitalize,
+            _ => power_rename::rules::CaseMode::Lower,
         };
         match self {
             RuleForm::Replace { search, replace, case_sensitive, .. } => {
@@ -76,6 +125,30 @@ impl RuleForm {
                 replace: replace.clone(),
                 scope,
             },
+            RuleForm::Case { mode, .. } => power_rename::rules::Rule::Case {
+                mode: case_mode(*mode),
+                scope,
+            },
+            RuleForm::Prefix { text } => power_rename::rules::Rule::Prefix { text: text.clone() },
+            RuleForm::Suffix { text } => power_rename::rules::Rule::Suffix { text: text.clone() },
+            RuleForm::Number { pos, start, step, digits, sep } => {
+                power_rename::rules::Rule::Number {
+                    pos: match pos {
+                        0 => power_rename::rules::NumberPos::Prefix,
+                        _ => power_rename::rules::NumberPos::Suffix,
+                    },
+                    start: start.trim().parse().unwrap_or(1),
+                    step: step.trim().parse().unwrap_or(1),
+                    digits: digits.trim().parse().unwrap_or(2),
+                    sep: sep.clone(),
+                }
+            }
+            RuleForm::Ext { text } => power_rename::rules::Rule::Ext { text: text.clone() },
+            RuleForm::Strip { chars, .. } => power_rename::rules::Rule::Strip {
+                chars: chars.clone(),
+                scope,
+            },
+            RuleForm::Trim { underscore } => power_rename::rules::Rule::Trim { underscore: *underscore },
             RuleForm::List { mapping } => power_rename::rules::Rule::List {
                 mapping: mapping.clone(),
             },
@@ -84,15 +157,21 @@ impl RuleForm {
 
     fn scope(&self) -> usize {
         match self {
-            RuleForm::Replace { scope, .. } | RuleForm::Regex { scope, .. } => *scope,
-            RuleForm::List { .. } => 0,
+            RuleForm::Replace { scope, .. }
+            | RuleForm::Regex { scope, .. }
+            | RuleForm::Case { scope, .. }
+            | RuleForm::Strip { scope, .. } => *scope,
+            _ => 0,
         }
     }
 
     fn set_scope(&mut self, s: usize) {
         match self {
-            RuleForm::Replace { scope, .. } | RuleForm::Regex { scope, .. } => *scope = s,
-            RuleForm::List { .. } => {}
+            RuleForm::Replace { scope, .. }
+            | RuleForm::Regex { scope, .. }
+            | RuleForm::Case { scope, .. }
+            | RuleForm::Strip { scope, .. } => *scope = s,
+            _ => {}
         }
     }
 }
@@ -120,6 +199,8 @@ struct RenameApp {
     tree: Option<TreeNode>,
     /// path → 预览信息（可改名节点的预览结果）
     preview_by_path: std::collections::HashMap<std::path::PathBuf, PreviewRow>,
+    /// 预览树中「已展开」的目录路径
+    expanded: std::collections::HashSet<std::path::PathBuf>,
     status_msg: String,
     undo: UndoManager,
 }
@@ -138,6 +219,7 @@ impl RenameApp {
             selected_rule: None,
             tree: None,
             preview_by_path: std::collections::HashMap::new(),
+            expanded: std::collections::HashSet::new(),
             status_msg: String::new(),
             undo: UndoManager::new(),
         }
@@ -204,9 +286,14 @@ impl RenameApp {
             }
         }
         self.tree = Some(tree);
-        let renamed = self.preview_by_path.values().filter(|r| r.status == PreviewStatus::Ok).count();
+        let ok = self.preview_by_path.values().filter(|r| r.status == PreviewStatus::Ok).count();
+        let conflict = self.preview_by_path.values().filter(|r| r.status == PreviewStatus::Conflict).count();
+        let error = self.preview_by_path.values().filter(|r| r.status == PreviewStatus::Error).count();
+        let unchanged = self.preview_by_path.values().filter(|r| r.status == PreviewStatus::Unchanged).count();
         let total = self.preview_by_path.len();
-        self.status_msg = format!("共 {total} 项，可改名 {renamed} 项");
+        self.status_msg = format!(
+            "共 {total} 项可改名 | 将重命名 {ok} | 冲突 {conflict} | 错误 {error} | 无变化 {unchanged}"
+        );
     }
 
     fn apply(&mut self) {
@@ -260,6 +347,12 @@ impl RenameApp {
             self.status_msg = "没有可撤销的操作".to_string();
         }
         self.reload();
+    }
+
+    /// 追加一条规则并选中（供添加按钮统一调用）。
+    fn push_form(&mut self, form: RuleForm) {
+        self.rules.push(form);
+        self.selected_rule = Some(self.rules.len() - 1);
     }
 
     fn export_list(&mut self) {
@@ -391,14 +484,64 @@ impl eframe::App for RenameApp {
 
         egui::SidePanel::left("rules").resizable(true).default_width(320.0).frame(panel_frame()).show(ctx, |ui| {
             ui.heading("规则");
+            // 添加规则按钮（两列，避免挤在一行）
             ui.horizontal(|ui| {
-                let mut add_replace = false;
-                let mut add_regex = false;
+                ui.label("添加：");
                 if ui.button("+ 替换").clicked() {
-                    add_replace = true;
+                    self.push_form(RuleForm::Replace {
+                        search: String::new(),
+                        replace: String::new(),
+                        case_sensitive: false,
+                        scope: 0,
+                    });
                 }
                 if ui.button("+ 正则").clicked() {
-                    add_regex = true;
+                    self.push_form(RuleForm::Regex {
+                        pattern: String::new(),
+                        replace: String::new(),
+                        scope: 0,
+                    });
+                }
+                if ui.button("+ 大小写").clicked() {
+                    self.push_form(RuleForm::Case { mode: 0, scope: 0 });
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("      ");
+                if ui.button("+ 前缀").clicked() {
+                    self.push_form(RuleForm::Prefix { text: String::new() });
+                }
+                if ui.button("+ 后缀").clicked() {
+                    self.push_form(RuleForm::Suffix { text: String::new() });
+                }
+                if ui.button("+ 编号").clicked() {
+                    self.push_form(RuleForm::Number {
+                        pos: 1,
+                        start: "1".into(),
+                        step: "1".into(),
+                        digits: "2".into(),
+                        sep: " ".into(),
+                    });
+                }
+                if ui.button("+ 扩展名").clicked() {
+                    self.push_form(RuleForm::Ext { text: "txt".into() });
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("      ");
+                if ui.button("+ 移除字符").clicked() {
+                    self.push_form(RuleForm::Strip {
+                        chars: "-_".into(),
+                        scope: 0,
+                    });
+                }
+                if ui.button("+ 压缩空白").clicked() {
+                    self.push_form(RuleForm::Trim { underscore: false });
+                }
+                if ui.button("+ 清单").clicked() {
+                    self.push_form(RuleForm::List {
+                        mapping: std::collections::HashMap::new(),
+                    });
                 }
                 if ui.button("删除").clicked() {
                     if let Some(idx) = self.selected_rule {
@@ -407,23 +550,6 @@ impl eframe::App for RenameApp {
                             self.selected_rule = None;
                         }
                     }
-                }
-                if add_replace {
-                    self.rules.push(RuleForm::Replace {
-                        search: String::new(),
-                        replace: String::new(),
-                        case_sensitive: false,
-                        scope: 0,
-                    });
-                    self.selected_rule = Some(self.rules.len() - 1);
-                }
-                if add_regex {
-                    self.rules.push(RuleForm::Regex {
-                        pattern: String::new(),
-                        replace: String::new(),
-                        scope: 0,
-                    });
-                    self.selected_rule = Some(self.rules.len() - 1);
                 }
             });
 
@@ -468,13 +594,78 @@ impl eframe::App for RenameApp {
                                 changed |= ui.text_edit_singleline(replace).changed();
                             });
                         }
+                        RuleForm::Case { mode, .. } => {
+                            ui.horizontal(|ui| {
+                                ui.label("转换方式：");
+                                for (mi, label) in ["小写", "大写", "首字母大写", "仅首字符大写"].iter().enumerate() {
+                                    if ui.selectable_label(*mode == mi, *label).clicked() {
+                                        *mode = mi;
+                                        changed = true;
+                                    }
+                                }
+                            });
+                        }
+                        RuleForm::Prefix { text } => {
+                            ui.horizontal(|ui| {
+                                ui.label("前缀文本：");
+                                changed |= ui.text_edit_singleline(text).changed();
+                            });
+                        }
+                        RuleForm::Suffix { text } => {
+                            ui.horizontal(|ui| {
+                                ui.label("后缀文本：");
+                                changed |= ui.text_edit_singleline(text).changed();
+                            });
+                        }
+                        RuleForm::Number { pos, start, step, digits, sep } => {
+                            ui.horizontal(|ui| {
+                                ui.label("位置：");
+                                for (pi, label) in ["前缀", "后缀"].iter().enumerate() {
+                                    if ui.selectable_label(*pos == pi, *label).clicked() {
+                                        *pos = pi;
+                                        changed = true;
+                                    }
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("起始值：");
+                                changed |= ui.text_edit_singleline(start).changed();
+                                ui.label("步长：");
+                                changed |= ui.text_edit_singleline(step).changed();
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("位数：");
+                                changed |= ui.text_edit_singleline(digits).changed();
+                                ui.label("分隔符：");
+                                changed |= ui.text_edit_singleline(sep).changed();
+                            });
+                        }
+                        RuleForm::Ext { text } => {
+                            ui.horizontal(|ui| {
+                                ui.label("新扩展名：");
+                                changed |= ui.text_edit_singleline(text).changed();
+                            });
+                        }
+                        RuleForm::Strip { chars, .. } => {
+                            ui.horizontal(|ui| {
+                                ui.label("移除字符：");
+                                changed |= ui.text_edit_singleline(chars).changed();
+                            });
+                        }
+                        RuleForm::Trim { underscore } => {
+                            changed |= ui.checkbox(underscore, "用下划线代替空格").changed();
+                        }
                         RuleForm::List { mapping } => {
                             ui.label(format!("按清单重命名：{} 条映射（导入自 CSV/文本）", mapping.len()));
                             ui.label("清单规则按「原始文件名」匹配，命中则采用清单新名。");
                         }
                     }
-                    // 作用范围（List 规则不适用）
-                    if !matches!(self.rules[idx], RuleForm::List { .. }) {
+                    // 作用范围（仅带 scope 的规则适用；List/Prefix/Suffix/Number/Ext/Trim 不适用）
+                    if matches!(self.rules[idx], RuleForm::Replace { .. }
+                        | RuleForm::Regex { .. }
+                        | RuleForm::Case { .. }
+                        | RuleForm::Strip { .. })
+                    {
                         let scopes = ["完整文件名", "主名（不含扩展名）", "扩展名"];
                         let mut scope = self.rules[idx].scope();
                         ui.horizontal(|ui| {
@@ -503,59 +694,136 @@ impl eframe::App for RenameApp {
 
         egui::CentralPanel::default().frame(panel_frame()).show(ctx, |ui| {
             ui.heading("预览");
-            egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
-                if let Some(tree) = &self.tree {
-                    let mut expanded = std::collections::HashSet::new();
-                    render_tree_node(ui, tree, &self.preview_by_path, &mut expanded, true);
-                } else {
-                    ui.label("（未加载目录）");
-                }
-            });
+            if let Some(tree) = &self.tree {
+                // 多列表格：当前名称（树形缩进）/ 新名称 / 状态 / 说明
+                use egui_extras::{Column, TableBuilder};
+                TableBuilder::new(ui)
+                    .striped(true)
+                    .resizable(true)
+                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                    .column(Column::initial(300.0).at_least(160.0).resizable(true)) // 当前名称
+                    .column(Column::initial(260.0).at_least(140.0).resizable(true)) // 新名称
+                    .column(Column::initial(70.0).at_least(50.0))                    // 状态
+                    .column(Column::remainder().at_least(120.0))                     // 说明
+                    .header(22.0, |mut header| {
+                        header.col(|ui| {
+                            ui.strong("当前名称（结构）");
+                        });
+                        header.col(|ui| {
+                            ui.strong("新名称");
+                        });
+                        header.col(|ui| {
+                            ui.strong("状态");
+                        });
+                        header.col(|ui| {
+                            ui.strong("说明");
+                        });
+                    })
+                    .body(|mut body| {
+                        // 根目录恒可见（且默认展开）；子节点仅当其父目录展开时才渲染
+                        render_tree_rows(&mut body, tree, &self.preview_by_path, &mut self.expanded, true, true, 0);
+                        if tree.children.is_empty() {
+                            body.row(22.0, |mut row| {
+                                row.col(|ui| {
+                                    ui.label("（空目录）");
+                                });
+                                row.col(|_ui| {});
+                                row.col(|_ui| {});
+                                row.col(|_ui| {});
+                            });
+                        }
+                    });
+            } else {
+                ui.label("（未加载目录）");
+            }
         });
     }
 }
 
-/// 递归渲染预览树：目录用 CollapsingHeader（可折叠），文件/可改名节点显示状态。
-fn render_tree_node(
-    ui: &mut egui::Ui,
+/// 递归把树渲染进表格 body。
+///
+/// 目录行：第一列显示带缩进的「📁 名字」+ 折叠三角（点击切换展开）；
+/// 文件行：显示原名/新名/状态/说明。目录行本身不在预览映射中，后三列留空。
+fn render_tree_rows(
+    body: &mut egui_extras::TableBody,
     node: &power_rename::fs_tree::TreeNode,
     by_path: &std::collections::HashMap<std::path::PathBuf, PreviewRow>,
-    _expanded: &mut std::collections::HashSet<std::path::PathBuf>,
+    expanded: &mut std::collections::HashSet<std::path::PathBuf>,
+    visible: bool,
     default_open: bool,
+    depth: usize,
 ) {
-    if node.is_dir {
-        let children = &node.children;
-        egui::CollapsingHeader::new(format!("📁 {}", node.name))
-            .default_open(default_open)
-            .show(ui, |ui| {
-                for child in children {
-                    render_tree_node(ui, child, by_path, _expanded, false);
-                }
-            });
-    } else {
-        let row = by_path.get(&node.path);
-        let (new_name, status, note) = match row {
-            Some(r) => (r.new_name.clone(), r.status, r.note.clone()),
-            None => (node.name.clone(), PreviewStatus::Unchanged, String::new()),
-        };
-        let color = match status {
-            PreviewStatus::Ok => egui::Color32::from_rgb(0x2e, 0x8b, 0x57),
-            PreviewStatus::Conflict => egui::Color32::from_rgb(0xc0, 0x39, 0x2b),
-            PreviewStatus::Error => egui::Color32::from_rgb(0x8b, 0x00, 0x00),
-            PreviewStatus::Unchanged => egui::Color32::GRAY,
-        };
-        let arrow = if status == PreviewStatus::Ok { " → " } else { "   " };
-        let mut text = String::from("📄 ");
-        text.push_str(&node.name);
-        text.push_str(arrow);
-        text.push_str(&new_name);
-        if !note.is_empty() {
-            text.push_str("  (");
-            text.push_str(&note);
-            text.push(')');
-        }
-        ui.colored_label(color, text);
+    if !visible {
+        return;
     }
+
+    if node.is_dir {
+        let is_open = expanded.contains(&node.path) || default_open;
+        body.row(22.0, |mut row| {
+            row.col(|ui| {
+                ui.horizontal(|ui| {
+                    ui.add_space(depth as f32 * 16.0);
+                    let triangle = if is_open { "▾" } else { "▸" };
+                    // 目录行用 selectable_label(false) 保留点击态但无「选中」高亮
+                    if ui.selectable_label(false, format!("{triangle} 📁 {}", node.name)).clicked() {
+                        let next = !is_open;
+                        if next {
+                            expanded.insert(node.path.clone());
+                        } else {
+                            expanded.remove(&node.path);
+                        }
+                    }
+                });
+            });
+            row.col(|_ui| {});
+            row.col(|_ui| {});
+            row.col(|_ui| {});
+        });
+        if is_open {
+            for child in &node.children {
+                render_tree_rows(body, child, by_path, expanded, true, false, depth + 1);
+            }
+        }
+        return;
+    }
+
+    // 文件行
+    let row_info = by_path.get(&node.path);
+    let (new_name, status, note) = match row_info {
+        Some(r) => (r.new_name.clone(), r.status, r.note.clone()),
+        None => (node.name.clone(), PreviewStatus::Unchanged, String::new()),
+    };
+    let color = match status {
+        PreviewStatus::Ok => egui::Color32::from_rgb(0x2e, 0x8b, 0x57),
+        PreviewStatus::Conflict => egui::Color32::from_rgb(0xc0, 0x39, 0x2b),
+        PreviewStatus::Error => egui::Color32::from_rgb(0x8b, 0x00, 0x00),
+        PreviewStatus::Unchanged => egui::Color32::GRAY,
+    };
+    let status_label = match status {
+        PreviewStatus::Ok => "就绪",
+        PreviewStatus::Unchanged => "无变化",
+        PreviewStatus::Conflict => "冲突",
+        PreviewStatus::Error => "错误",
+    };
+    body.row(22.0, |mut row| {
+        row.col(|ui| {
+            ui.horizontal(|ui| {
+                ui.add_space(depth as f32 * 16.0);
+                ui.label(format!("📄 {}", node.name));
+            });
+        });
+        row.col(|ui| {
+            ui.colored_label(color, new_name);
+        });
+        row.col(|ui| {
+            ui.label(status_label);
+        });
+        row.col(|ui| {
+            if !note.is_empty() {
+                ui.label(note);
+            }
+        });
+    });
 }
 
 fn main() -> eframe::Result {
@@ -578,10 +846,13 @@ fn main() -> eframe::Result {
 fn install_light_theme(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::light();
 
-    // 背景：浅灰而非纯白，避免"一片白"
-    visuals.panel_fill = egui::Color32::from_rgb(0xF2, 0xF3, 0xF5);
-    visuals.window_fill = egui::Color32::WHITE;
-    visuals.extreme_bg_color = egui::Color32::from_rgb(0xE8, 0xEA, 0xED);
+    // 背景统一浅灰（面板/窗口/表格行都别纯白，避免刺眼）
+    let bg = egui::Color32::from_rgb(0xF2, 0xF3, 0xF5);
+    let bg_alt = egui::Color32::from_rgb(0xE8, 0xEA, 0xED); // 表格交替行
+    visuals.panel_fill = bg;
+    visuals.window_fill = bg;
+    visuals.extreme_bg_color = bg_alt;
+    visuals.faint_bg_color = bg_alt; // TableBuilder striped 行
 
     // 控件边框 + 圆角，让按钮/输入框有轮廓
     let border = egui::Color32::from_rgb(0xC8, 0xCB, 0xCF);
@@ -596,7 +867,7 @@ fn install_light_theme(ctx: &egui::Context) {
         w.corner_radius = egui::CornerRadius::same(4);
     }
     // 按钮/控件：白底 + 边框；悬停轻微变蓝、按下蓝色边框
-    visuals.widgets.inactive.bg_fill = egui::Color32::WHITE;
+    visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(0xFF, 0xFF, 0xFF);
     visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, accent);
     visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(0xE8, 0xF0, 0xFB);
     visuals.widgets.active.bg_stroke = egui::Stroke::new(1.5, accent);
@@ -608,46 +879,75 @@ fn install_light_theme(ctx: &egui::Context) {
     ctx.set_visuals(visuals);
 }
 
-/// 面板统一样式：白底 + 浅灰边框 + 内边距，让各区域有清晰分隔。
+/// 面板统一样式：接缝处微灰（与背景一致），内边距让内容不贴边。
 fn panel_frame() -> egui::Frame {
     egui::Frame::new()
-        .fill(egui::Color32::WHITE)
+        .fill(egui::Color32::from_rgb(0xF2, 0xF3, 0xF5))
         .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0xD0, 0xD3, 0xD7)))
         .inner_margin(egui::Margin::same(8))
         .corner_radius(egui::CornerRadius::same(0))
 }
 
 /// 安装中文字体（egui 默认字体不含中文，需加载系统字体，否则中文显示为乱码/方框）。
+///
+/// 为什么 tkinter 没这问题：tkinter 不嵌入字体，直接用系统字体渲染文本；
+/// egui 用内置字形图集（glyph atlas）绘制所有文本，必须把字体文件读进内存，
+/// 否则非 English 字符（中文等）无字形可画 → 方框/乱码。
+///
+/// 跨平台：按当前系统加载字体文件。各平台中文字体路径：
+/// - Windows: msyh(微软雅黑) / simhei(黑体) / simsun(宋体)
+/// - macOS:   PingFang / Hiragino Sans GB / STHeiti
+/// - Linux:   Noto Sans CJK / WenQuanYi / Droid Sans Fallback
+/// 全部找不到时保留 egui 自带字体（英文界面仍可用，中文暂时缺字形）。
 fn install_chinese_font(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
 
-    // 按优先级尝试常见的 Windows 中文字体文件
-    let candidates = [
-        "C:/Windows/Fonts/msyh.ttc",    // 微软雅黑
-        "C:/Windows/Fonts/msyh.ttf",
-        "C:/Windows/Fonts/simhei.ttf",  // 黑体
-        "C:/Windows/Fonts/simsun.ttc",  // 宋体
-        "C:/Windows/Fonts/simkai.ttf",  // 楷体
-    ];
+    // 按当前平台挑选候选字体文件（按优先级）
+    let (win, mac, linux): (&[&str], &[&str], &[&str]) = (
+        &[
+            "C:/Windows/Fonts/msyh.ttc",
+            "C:/Windows/Fonts/msyh.ttf",
+            "C:/Windows/Fonts/simhei.ttf",
+            "C:/Windows/Fonts/simsun.ttc",
+            "C:/Windows/Fonts/simkai.ttf",
+        ],
+        &[
+            "/System/Library/Fonts/PingFang.ttc",           // 苹方
+            "/System/Library/Fonts/Hiragino Sans GB.ttc",
+            "/Library/Fonts/Arial Unicode.ttf",
+            "/System/Library/Fonts/STHeiti Light.ttc",
+            "/System/Library/Fonts/STHeiti Medium.ttc",
+        ],
+        &[
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+        ],
+    );
+
+    // 当前平台: cargo 编译目标 tripe 决定，运行时用 cfg!(target_os)
+    let candidates: &[&str] = if cfg!(target_os = "windows") {
+        win
+    } else if cfg!(target_os = "macos") {
+        mac
+    } else {
+        linux
+    };
+
     let mut installed = false;
     for path in candidates {
         if let Ok(bytes) = std::fs::read(path) {
-            let mut font_data = egui::FontData::from_owned(bytes);
-            // 中文字形基线偏高（CJK 字体常见）：整体下移 0.2 字号，与英文基线对齐
-            font_data.tweak = egui::FontTweak {
-                y_offset_factor: 0.2,
-                ..Default::default()
-            };
-            fonts.font_data.insert(
-                "chinese".to_owned(),
-                font_data.into(),
-            );
+            let font_data = egui::FontData::from_owned(bytes);
+            // 注意：不再加 y_offset_factor（那会让按钮文字整体偏上，
+            // 导致“按钮文字没居中”感）。中文与英文基线差异交给字形自身。
+            fonts.font_data.insert("chinese".to_owned(), font_data.into());
             installed = true;
             break;
         }
     }
     if !installed {
-        // 非 Windows 或找不到中文字体：静默跳过（英文界面仍可用）
+        // 全部找不到：保留 egui 默认字体（英文可用），不强行加载
         return;
     }
 
