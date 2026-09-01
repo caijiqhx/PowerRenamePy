@@ -483,7 +483,8 @@ class PowerRenameApp:
         if not path:
             return
         try:
-            Path(path).write_text(text, encoding="utf-8")
+            # utf-8-sig（带 BOM）：Windows 版 Excel 打开否则默认按 GBK 解析导致中文乱码
+            Path(path).write_text(text, encoding="utf-8-sig")
         except OSError as exc:
             messagebox.showerror("导出清单", f"写入失败：\n{exc}")
             return
