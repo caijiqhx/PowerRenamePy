@@ -20,6 +20,8 @@ PowerRenamePy 核心重命名引擎。
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import os
 import re
@@ -295,23 +297,38 @@ def read_text_auto_encoding(path, fallback: str = "utf-8") -> str:
 def parse_rename_list(text: str) -> Dict[str, str]:
     """
     解析「原名→新名」清单文本，返回 {原名: 新名} 映射。
-    每行一条；分隔符支持 → / -> / => / Tab / 逗号 / 分号 / 竖线 / 连续 2+ 空格。
-    文件第一行若含表头字样（old/原名/旧名/from）则跳过。
+
+    优先按标准 CSV 读取（逗号分隔、双引号转义，兼容本工具导出的模板）；
+    拆不出两列的行再回退到通用分隔符规则（→ / -> / => / Tab / 分号 /
+    竖线 / 连续 2+ 空格），手写清单仍可用。
+    跳过空行、# 注释行与表头行（old/原名/旧名/源名）。
     未匹配清单的文件保持原名。（引擎层不处理文件系统，仅做文本解析）
     """
+    try:
+        rows = list(csv.reader(io.StringIO(text), skipinitialspace=True))
+    except csv.Error:
+        rows = [[l] for l in text.splitlines()]
+
     mapping: Dict[str, str] = {}
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or _RENAME_LIST_COMMENT_RE.search(line):
+    for fields in rows:
+        if not fields or not fields[0].strip():
+            continue
+        old = fields[0].strip()
+        if _RENAME_LIST_COMMENT_RE.search(old):
+            continue
+        if len(fields) >= 2:
+            new = fields[1].strip()
+        else:
+            parts = _RENAME_LIST_SEPARATORS.split(old, maxsplit=1)
+            if len(parts) != 2:
+                continue
+            old, new = parts[0].strip(), parts[1].strip()
+        if not old or not new:
             continue
         # 兼容第一行表头（常见：old,new 等）
-        if not mapping and re.match(r"^(old|from|原名|旧名|源名)\b", line, re.IGNORECASE):
+        if not mapping and re.match(r"^(old|from|原名|旧名|源名)\b", old, re.IGNORECASE):
             continue
-        parts = _RENAME_LIST_SEPARATORS.split(line, maxsplit=1)
-        if len(parts) == 2:
-            old, new = parts[0].strip(), parts[1].strip()
-            if old and new:
-                mapping[old] = new
+        mapping[old] = new
     return mapping
 
 
@@ -436,25 +453,27 @@ def transform_name(name: str, rules: List[RenameRule], index: int = 0) -> str:
 # ---------------------------------------------------------------- 导出清单
 def build_export_text(entries: List[FileEntry], rules: Optional[List[RenameRule]] = None) -> str:
     """
-    生成供「导入清单」使用的清单文本。
+    生成供「导入清单」使用的标准 CSV 文本（Excel 友好，逗号分隔 + 双引号转义）。
 
-    - rules 为空：每行「原名 → 」（模板，填上新名即可导入）
-    - rules 非空：每行「原名 → 新名」，新名为规则预览结果（忽略 conflict/error 项）
+    首行为表头「原名,新名」；其后每行：
+    - rules 为空：每行「原名,原名」——第二列预填原名，用户在模板上改填新名即可导入
+    - rules 非空：每行「原名,新名」，新名为规则预览结果（conflict/error 项第二列留空）
     返回文本以 \n 结尾；无条目时返回空字符串。
     """
     if not entries:
         return ""
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(["原名", "新名"])
     if rules:
         preview = compute_preview(entries, rules)
-        lines = []
         for it in preview:
-            if it.status == STATUS_OK:
-                lines.append(f"{it.old_name} → {it.new_name}")
-            else:
-                lines.append(f"{it.old_name} → ")
+            new_name = it.new_name if it.status == STATUS_OK else ""
+            writer.writerow([it.old_name, new_name])
     else:
-        lines = [f"{e.name} → " for e in entries]
-    return "\n".join(lines) + "\n"
+        for e in entries:
+            writer.writerow([e.name, e.name])
+    return buf.getvalue()
 
 
 # ---------------------------------------------------------------- 预览与冲突检测

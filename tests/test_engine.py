@@ -175,6 +175,20 @@ class TestTransform(unittest.TestCase):
             self.assertTrue((root / "photo1.jpg").exists())
             self.assertFalse((root / "wedding1.jpg").exists())
 
+    def test_export_template_is_noop_mapping(self):
+        """导出无规则的模板 → 第二列默认预填原名 → 导入后映射值为原名，应用不会产生改名。"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            for n in ("a.txt", "b.txt"):
+                (root / n).write_text("x", encoding="utf-8")
+            entries = load_entries(root, recursive=False)
+            text = build_export_text(entries)  # 无规则模板
+            mapping = parse_rename_list(text)
+            self.assertEqual(mapping, {"a.txt": "a.txt", "b.txt": "b.txt"})
+            # 导入映射值=原名 → 应用时都应判 unchanged，无改名可执行
+            preview = compute_preview(entries, [make_rule(RULE_LIST, mapping=mapping)])
+            self.assertTrue(all(it.status == STATUS_UNCHANGED for it in preview))
+
     def test_list_mapping_stacks_with_pipeline(self):
         """RULE_LIST 与前后规则叠加：命中=清单覆盖前序，未命中=保留；后续规则继续叠加。"""
         m = {"a.txt": "aa.txt"}
@@ -438,17 +452,33 @@ class TestExport(unittest.TestCase):
         entries = self._mk_entries(["a.txt", "b.txt"])
         text = build_export_text(entries)
         lines = [l for l in text.splitlines() if l.strip()]
-        self.assertEqual(len(lines), 2)
-        self.assertTrue(lines[0].endswith(" → "))
-        self.assertTrue(any(l.startswith("a.txt") for l in lines))
+        self.assertEqual(lines[0], "原名,新名")          # 表头
+        self.assertEqual(len(lines), 3)                   # 表头 + 2 数据行
+        self.assertIn("a.txt,a.txt", lines)               # 无规则时第二列预填原名
+        self.assertIn("b.txt,b.txt", lines)
 
     def test_with_rules_shows_new_names(self):
         entries = self._mk_entries(["a.txt", "b.txt"])
         r = make_rule(RULE_PREFIX, text="pre_")
         text = build_export_text(entries, [r])
         lines = [l for l in text.splitlines() if l.strip()]
-        self.assertIn("a.txt → pre_a.txt", lines)
-        self.assertIn("b.txt → pre_b.txt", lines)
+        self.assertEqual(lines[0], "原名,新名")           # 表头
+        self.assertIn("a.txt,pre_a.txt", lines)           # 有规则时第二列是新名
+        self.assertIn("b.txt,pre_b.txt", lines)
+
+    def test_export_csv_escapes_special_chars(self):
+        """导出为标准 CSV：字段含逗号时自动加双引号转义（Excel 可直接打开）。"""
+        entries = self._mk_entries(["a,b.txt", "d e.txt"])
+        text = build_export_text(entries)
+        lines = [l for l in text.splitlines() if l.strip()]
+        # 含逗号的名字被引号包裹
+        self.assertIn('"a,b.txt","a,b.txt"', lines)
+        # 含空格的名字无需转义
+        self.assertIn("d e.txt,d e.txt", lines)
+        # 导出的 CSV 可被解析器无损读回
+        m = parse_rename_list(text)
+        self.assertIn("a,b.txt", m)
+        self.assertEqual(m["a,b.txt"], "a,b.txt")
 
     def test_empty(self):
         self.assertEqual(build_export_text([]), "")

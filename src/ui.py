@@ -475,9 +475,9 @@ class PowerRenameApp:
         text = build_export_text(entries, self.rules)
         path = filedialog.asksaveasfilename(
             title="导出文件清单",
-            defaultextension=".txt",
-            filetypes=[("文本", "*.txt"), ("CSV", "*.csv"), ("所有文件", "*.*")],
-            initialfile="rename_list.txt",
+            defaultextension=".csv",
+            filetypes=[("CSV 文件", "*.csv"), ("文本", "*.txt"), ("所有文件", "*.*")],
+            initialfile="rename_list.csv",
             initialdir=self.dir_var.get() or str(Path.home()),
         )
         if not path:
@@ -487,9 +487,8 @@ class PowerRenameApp:
         except OSError as exc:
             messagebox.showerror("导出清单", f"写入失败：\n{exc}")
             return
-        n = len([l for l in text.splitlines() if l.strip()])
         mode = "含新名预览" if self.rules else "模板"
-        self._set_status(f"已导出 {n} 项清单（{mode}）：{Path(path).name}")
+        self._set_status(f"已导出 {len(entries)} 项清单（{mode}）：{Path(path).name}")
 
     def _import_rename_list(self) -> None:
         """选择清单文件（txt/csv）→ 解析为 {原名: 新名} 映射 → 设置/替换清单规则。"""
