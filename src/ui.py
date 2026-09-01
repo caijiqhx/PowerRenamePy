@@ -17,6 +17,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from rename_engine import (
+    RULE_LIST,
     RULE_TYPES,
     STATUS_CONFLICT,
     STATUS_ERROR,
@@ -31,8 +32,22 @@ from rename_engine import (
     compute_preview,
     default_rule,
     load_entries,
+    make_rule,
+    parse_rename_list,
     rule_summary,
 )
+
+
+def _read_text_auto_encoding(path: Path, fallback: str = "utf-8") -> str:
+    """读取文本文件，自动识别编码（优先 UTF-8，失败回退 GBK，再回退指定编码）。"""
+    raw = path.read_bytes()
+    for enc in ("utf-8-sig", "utf-8", "gbk", fallback):
+        try:
+            return raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return raw.decode(fallback, errors="replace")
+
 
 # 预览表格行配色（浅色主题）
 _TAG_COLORS = {
@@ -77,6 +92,7 @@ class PowerRenameApp:
         entry.bind("<Return>", lambda _e: self.load_files())
         ttk.Button(bar, text="浏览…", command=self._browse).pack(side=tk.LEFT)
         ttk.Button(bar, text="加载", command=self.load_files).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(bar, text="导入清单…", command=self._import_rename_list).pack(side=tk.LEFT, padx=(6, 0))
 
         row2 = ttk.Frame(self.root, padding=(10, 2, 10, 4))
         row2.pack(side=tk.TOP, fill=tk.X)
@@ -199,7 +215,15 @@ class PowerRenameApp:
                 row=row, column=0, sticky="e", padx=(0, 6), pady=2)
             val = rule.params.get(f.key, f.default)
 
-            if f.kind == "bool":
+            if f.kind == "map":
+                # 清单规则：映射由「导入清单」设置，此处只展示条数与查看入口
+                mapping = val if isinstance(val, dict) else {}
+                info = ttk.Frame(self.rule_form)
+                info.grid(row=row, column=1, sticky="w")
+                ttk.Label(info, text=f"已导入 {len(mapping)} 项映射").pack(side=tk.LEFT)
+                ttk.Button(info, text="查看映射…", width=10,
+                           command=self._show_list_mapping).pack(side=tk.LEFT, padx=(6, 0))
+            elif f.kind == "bool":
                 var = tk.BooleanVar(value=bool(val))
                 widget = ttk.Checkbutton(self.rule_form, variable=var)
                 widget.grid(row=row, column=1, sticky="w")
@@ -395,6 +419,75 @@ class PowerRenameApp:
         if d:
             self.dir_var.set(d)
             self.load_files()
+
+    # ------------------------------------------------------------ 清单重命名
+    def _import_rename_list(self) -> None:
+        """选择清单文件（txt/csv）→ 解析为 {原名: 新名} 映射 → 设置/替换清单规则。"""
+        raw_path = filedialog.askopenfilename(
+            title="选择重命名清单文件",
+            filetypes=[("文本/CSV", "*.txt *.csv"), ("所有文件", "*.*")],
+            initialdir=self.dir_var.get() or str(Path.home()),
+        )
+        if not raw_path:
+            return
+        path = Path(raw_path)
+        try:
+            text = _read_text_auto_encoding(path)
+        except OSError as exc:
+            messagebox.showerror("导入清单", f"读取文件失败：\n{exc}")
+            return
+
+        mapping = parse_rename_list(text)
+        if not mapping:
+            messagebox.showwarning(
+                "导入清单",
+                "未解析到有效的「原名→新名」条目。\n\n"
+                "支持每行一条，分隔符：→ / -> / => / Tab / 逗号 / 分号 / 竖线 / 连续空格。\n"
+                "例如：\n  photo1.jpg → wedding1.jpg",
+            )
+            return
+
+        # 找到已有清单规则则替换其映射，否则追加一条
+        list_rules = [r for r in self.rules if r.rule_type == RULE_LIST]
+        if list_rules:
+            list_rules[-1].params["mapping"] = mapping
+        else:
+            self.rules.append(make_rule(RULE_LIST, mapping=mapping))
+
+        self._refresh_rules_tree(select_index=len(self.rules) - 1)
+        self._build_rule_form()
+        self.refresh_preview()
+        self._set_status(
+            f"已导入清单：{len(mapping)} 条映射（{path.name}）；"
+            "未匹配清单的文件将保持原名")
+
+    def _show_list_mapping(self) -> None:
+        """弹窗查看当前清单规则的映射明细。"""
+        rule = self._selected_rule()
+        if rule is None or rule.rule_type != RULE_LIST:
+            return
+        mapping = rule.params.get("mapping", {})
+        win = tk.Toplevel(self.root)
+        win.title("清单映射")
+        win.geometry("520x420")
+        win.transient(self.root)
+
+        frame = ttk.Frame(win, padding=8)
+        frame.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(frame, text=f"共 {len(mapping)} 条映射").pack(anchor="w")
+        text = tk.Text(frame, wrap=tk.NONE)
+        vsb = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=text.yview)
+        hsb = ttk.Scrollbar(frame, orient=tk.HORIZONTAL, command=text.xview)
+        text.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        text.grid(row=1, column=0, sticky="nsew")
+        vsb.grid(row=1, column=1, sticky="ns")
+        hsb.grid(row=2, column=0, sticky="ew")
+        frame.rowconfigure(1, weight=1)
+        frame.columnconfigure(0, weight=1)
+        for old, new in mapping.items():
+            text.insert(tk.END, f"{old}  →  {new}\n")
+        text.config(state=tk.DISABLED)
+        ttk.Button(win, text="关闭", command=win.destroy).pack(pady=6)
 
     def load_files(self, *_a) -> None:
         raw = self.dir_var.get().strip()

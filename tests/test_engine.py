@@ -16,6 +16,7 @@ from pathlib import Path
 from src.rename_engine import (
     RULE_CASE,
     RULE_EXT,
+    RULE_LIST,
     RULE_NUMBER,
     RULE_PREFIX,
     RULE_REGEX,
@@ -35,6 +36,7 @@ from src.rename_engine import (
     compute_preview,
     load_entries,
     make_rule,
+    parse_rename_list,
     transform_name,
 )
 
@@ -105,6 +107,68 @@ class TestTransform(unittest.TestCase):
         rules = [make_rule(RULE_REPLACE, search=".txt", replace=""),
                  make_rule(RULE_NUMBER, pos="suffix", start=1, digits=2, sep="")]
         self.assertEqual(transform_name("a.txt", rules, 0), "a01")
+
+    def test_list_mapping(self):
+        mapping = {"a.txt": "aa.txt", "b.txt": "bb.txt"}
+        r = make_rule(RULE_LIST, mapping=mapping)
+        self.assertEqual(transform_name("a.txt", [r]), "aa.txt")
+        self.assertEqual(transform_name("b.txt", [r]), "bb.txt")
+        # 未匹配项保持原名
+        self.assertEqual(transform_name("c.txt", [r]), "c.txt")
+
+    def test_parse_rename_list_separators(self):
+        text = (
+            "# 批量改名\n"
+            "photo1.jpg → wedding1.jpg\n"
+            "photo2.jpg -> wedding2.jpg\n"
+            "photo3.jpg\twedding3.jpg\n"
+            "photo4.jpg, wedding4.jpg\n"
+            "photo5.jpg; wedding5.jpg\n"
+            "photo6.jpg | wedding6.jpg\n"
+            "photo7.jpg  wedding7.jpg\n"
+        )
+        m = parse_rename_list(text)
+        self.assertEqual(len(m), 7)
+        self.assertEqual(m["photo1.jpg"], "wedding1.jpg")
+        self.assertEqual(m["photo7.jpg"], "wedding7.jpg")
+        # 忽略注释、空行、与重复覆盖
+        text2 = "# 头\n\na.txt,b.txt\na.txt,xx.txt\n"
+        m2 = parse_rename_list(text2)
+        self.assertEqual(m2, {"a.txt": "xx.txt"})
+
+    def test_parse_rename_list_skips_header(self):
+        m = parse_rename_list("old,new\na.txt,b.txt\n")
+        self.assertEqual(m, {"a.txt": "b.txt"})
+        m2 = parse_rename_list("原名\t新名\na.txt\tb.txt\n")
+        self.assertEqual(m2, {"a.txt": "b.txt"})
+
+    def test_list_full_flow(self):
+        """清单重命名 + 两阶段执行 + 撤销。"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            for n in ("photo1.jpg", "photo2.jpg"):
+                (root / n).write_text("x", encoding="utf-8")
+            entries = load_entries(root, recursive=False)
+            mapping = {"photo1.jpg": "wedding1.jpg"}
+            preview = compute_preview(entries, [make_rule(RULE_LIST, mapping=mapping)])
+            self.assertEqual(preview[0].new_name, "wedding1.jpg")
+            self.assertEqual(preview[0].status, STATUS_OK)
+            # 未匹配项 status 应为 unchanged
+            self.assertEqual(preview[1].status, STATUS_UNCHANGED)
+            items = [(it.entry.path, it.entry.path.with_name(it.new_name))
+                     for it in preview if it.status == STATUS_OK]
+            res = apply_renames(items)
+            self.assertFalse(res.rolled_back)
+            self.assertEqual(len(res.logs), 1)
+            self.assertTrue((root / "wedding1.jpg").exists())
+            self.assertFalse((root / "photo1.jpg").exists())
+            # 撤销
+            um = UndoManager()
+            um.push(res.logs)
+            done, errors = um.undo()
+            self.assertEqual(done, 1)
+            self.assertTrue((root / "photo1.jpg").exists())
+            self.assertFalse((root / "wedding1.jpg").exists())
 
 
 class TestPreview(unittest.TestCase):

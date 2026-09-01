@@ -50,6 +50,7 @@ RULE_NUMBER = "number"      # 序列编号
 RULE_EXT = "ext"            # 替换扩展名
 RULE_STRIP = "strip"        # 移除指定字符
 RULE_TRIM = "trim"          # 压缩空白
+RULE_LIST = "list"          # 按导入清单重命名（原名→新名）
 
 # 作用范围
 SCOPE_FULL = "full"
@@ -134,6 +135,9 @@ RULE_TYPES: List[RuleTypeDef] = [
     RuleTypeDef(RULE_TRIM, "压缩空白", [
         FieldDef("underscore", "用下划线代替空格", "bool", default=False),
     ]),
+    RuleTypeDef(RULE_LIST, "按清单重命名", [
+        FieldDef("mapping", "清单映射（原名→新名）", "map", default={}),
+    ]),
 ]
 
 TYPE_BY_ID = {t.id: t for t in RULE_TYPES}
@@ -208,11 +212,42 @@ def rule_summary(rule: RenameRule) -> str:
         return f"移除字符「{p.get('chars','')}」"
     if rt == RULE_TRIM:
         return "压缩空白" + ("（转下划线）" if p.get("underscore") else "")
+    if rt == RULE_LIST:
+        return f"按清单重命名（{len(p.get('mapping', {}))} 项）"
     return rt
 
 
 def has_invalid_chars(name: str) -> bool:
     return bool(_INVALID_NAME_RE.search(name))
+
+
+# ---------------------------------------------------------------- 清单解析
+# 分隔符：箭头、Tab、逗号、分号、竖线、2+ 连续空格（CSV 制表符）。支持行尾注释（#）。
+_RENAME_LIST_SEPARATORS = re.compile(r"\s*[→,;|\t]\s*|->|=>|,|\t|\s{2,}")
+_RENAME_LIST_COMMENT_RE = re.compile(r"^\s*#|#\s*$")
+
+
+def parse_rename_list(text: str) -> Dict[str, str]:
+    """
+    解析「原名→新名」清单文本，返回 {原名: 新名} 映射。
+    每行一条；分隔符支持 → / -> / => / Tab / 逗号 / 分号 / 竖线 / 连续 2+ 空格。
+    文件第一行若含表头字样（old/原名/旧名/from）则跳过。
+    未匹配清单的文件保持原名。（引擎层不处理文件系统，仅做文本解析）
+    """
+    mapping: Dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or _RENAME_LIST_COMMENT_RE.search(line):
+            continue
+        # 兼容第一行表头（常见：old,new 等）
+        if not mapping and re.match(r"^(old|from|原名|旧名|源名)\b", line, re.IGNORECASE):
+            continue
+        parts = _RENAME_LIST_SEPARATORS.split(line, maxsplit=1)
+        if len(parts) == 2:
+            old, new = parts[0].strip(), parts[1].strip()
+            if old and new:
+                mapping[old] = new
+    return mapping
 
 
 # ---------------------------------------------------------------- 名称转换
@@ -255,6 +290,10 @@ def _apply_rule(name: str, rule: RenameRule, index: int) -> str:
         if p.get("underscore"):
             out = out.replace(" ", "_")
         return out
+
+    if rt == RULE_LIST:
+        # 按清单重命名：匹配到原名则替换为清单中的新名，否则保持原名
+        return str(p.get("mapping", {}).get(name, name))
 
     # 以下规则支持作用范围
     scope = p.get("scope", SCOPE_FULL)
