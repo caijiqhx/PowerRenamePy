@@ -188,12 +188,19 @@ class TestTransform(unittest.TestCase):
 
 
 class TestPreview(unittest.TestCase):
+    """注意：让位检查依赖真实磁盘状态，临时目录必须贯穿整个测试生命周期
+    （不能放在 with 块内即时销毁，否则 exists() 恒为 False）。"""
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        self.root = Path(self._td.name)
+
     def _mk_entries(self, names):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            for n in names:
-                (root / n).write_text("x", encoding="utf-8")
-            return [root / n for n in names], load_entries(root, recursive=False)
+        root = self.root
+        for n in names:
+            (root / n).write_text("x", encoding="utf-8")
+        return [root / n for n in names], load_entries(root, recursive=False)
 
     def test_ok_and_unchanged(self):
         paths, entries = self._mk_entries(["a.txt", "b.txt"])
@@ -223,6 +230,72 @@ class TestPreview(unittest.TestCase):
         r = make_rule(RULE_PREFIX, text="")
         preview = compute_preview(entries, [r])
         self.assertEqual(preview[0].status, STATUS_UNCHANGED)
+
+    def test_swap_names_both_move_ok(self):
+        """a→b、b→a 互换：双方都在名单内且都会让位 -> 不算冲突。"""
+        _, entries = self._mk_entries(["a.txt", "b.txt"])
+        mapping = {"a.txt": "b.txt", "b.txt": "a.txt"}
+        preview = compute_preview(entries, [make_rule(RULE_LIST, mapping=mapping)])
+        by_old = {it.old_name: it for it in preview}
+        self.assertEqual(by_old["a.txt"].status, STATUS_OK)
+        self.assertEqual(by_old["a.txt"].new_name, "b.txt")
+        self.assertEqual(by_old["b.txt"].status, STATUS_OK)
+        self.assertEqual(by_old["b.txt"].new_name, "a.txt")
+
+    def test_target_holds_still_conflict(self):
+        """a→b，但 b 在名单内保持原名（不让位）-> 判冲突。"""
+        _, entries = self._mk_entries(["a.txt", "b.txt"])
+        mapping = {"a.txt": "b.txt", "b.txt": "b.txt"}
+        preview = compute_preview(entries, [make_rule(RULE_LIST, mapping=mapping)])
+        by_old = {it.old_name: it for it in preview}
+        self.assertEqual(by_old["a.txt"].status, STATUS_CONFLICT)
+        self.assertEqual(by_old["a.txt"].new_name, "b.txt")
+        self.assertEqual(by_old["b.txt"].status, STATUS_UNCHANGED)
+
+    def test_cycle_three_all_move_ok(self):
+        """a→b、b→c、c→a 三角换位：全部让位 -> 全部放行。"""
+        _, entries = self._mk_entries(["a.txt", "b.txt", "c.txt"])
+        mapping = {"a.txt": "b.txt", "b.txt": "c.txt", "c.txt": "a.txt"}
+        preview = compute_preview(entries, [make_rule(RULE_LIST, mapping=mapping)])
+        self.assertEqual([it.status for it in preview],
+                         [STATUS_OK, STATUS_OK, STATUS_OK])
+
+    def test_chain_broken_cascades_conflict(self):
+        """a→b、b→c、c 保持原名：c 不让位 -> b 冲突 -> a 连锁冲突。"""
+        _, entries = self._mk_entries(["a.txt", "b.txt", "c.txt"])
+        mapping = {"a.txt": "b.txt", "b.txt": "c.txt", "c.txt": "c.txt"}
+        preview = compute_preview(entries, [make_rule(RULE_LIST, mapping=mapping)])
+        by_old = {it.old_name: it for it in preview}
+        self.assertEqual(by_old["c.txt"].status, STATUS_UNCHANGED)
+        self.assertEqual(by_old["b.txt"].status, STATUS_CONFLICT)
+        self.assertEqual(by_old["a.txt"].status, STATUS_CONFLICT)
+
+    def test_cross_dir_same_new_name_ok(self):
+        """不同目录的条目改成同名：各自目录都无占用 -> 全部 OK。"""
+        for nr in ("sub1", "sub2"):
+            (self.root / nr).mkdir(exist_ok=True)
+            (self.root / nr / ("a.txt" if nr == "sub1" else "b.txt")).write_text("x", encoding="utf-8")
+        entries = load_entries(self.root, recursive=True)
+        mapping = {"a.txt": "x.txt", "b.txt": "x.txt"}
+        preview = compute_preview(entries, [make_rule(RULE_LIST, mapping=mapping)])
+        by_old = {it.old_name: it for it in preview}
+        self.assertEqual(by_old["a.txt"].status, STATUS_OK)
+        self.assertEqual(by_old["b.txt"].status, STATUS_OK)
+
+    def test_cross_dir_same_old_holder_all_yield_ok(self):
+        """同名 x.txt 在多个目录都存在：都让位成 y，另一目录内的 a.txt 换入 x -> 全部 OK。
+        RULE_LIST 按纯文件名匹配，x.txt→y.txt 会命中所有目录的 x.txt，都让位。"""
+        for rel in ("dir1/x.txt", "dir2/x.txt", "dir1/a.txt"):
+            p = self.root / rel
+            p.parent.mkdir(exist_ok=True)
+            p.write_text("x", encoding="utf-8")
+        entries = load_entries(self.root, recursive=True)
+        mapping = {"x.txt": "y.txt", "a.txt": "x.txt"}
+        preview = compute_preview(entries, [make_rule(RULE_LIST, mapping=mapping)])
+        by_old = {it.old_name: it for it in preview}
+        self.assertEqual(by_old["x.txt"].status, STATUS_OK)   # 每个目录的 x 都让位
+        self.assertEqual(len([it for it in preview if it.old_name == "x.txt"]), 2)
+        self.assertEqual(by_old["a.txt"].status, STATUS_OK)   # 换入 dir1 让出的空位
 
 
 class TestApplyAndUndo(unittest.TestCase):

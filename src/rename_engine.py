@@ -459,36 +459,79 @@ def build_export_text(entries: List[FileEntry], rules: Optional[List[RenameRule]
 
 # ---------------------------------------------------------------- 预览与冲突检测
 def compute_preview(entries: List[FileEntry], rules: List[RenameRule]) -> List[PreviewItem]:
-    results: List[PreviewItem] = []
-    new_name_owners: Dict[str, str] = {}
-    old_set = {e.name for e in entries}
+    """
+    计算预览与冲突检测。
 
+    冲突判定按「目录」分组进行——同名文件占用只在同一目录内成立，
+    跨目录同名互不影响（两个目录都能各自存在 x.txt）。
+
+    每组（目录）内部三层判断：
+    1. 目标重名：本目录内两个条目换到同一个新名。
+    2. 磁盘占用：目标名在磁盘上已存在，且本目录名单内无同名条目 -> 冲突。
+    3. 让位检查：目标名是本目录名单内某条目的原名时，只有该原主会真正
+       改名让位才允许换入；原主保持原名或改名失败时，换入者同样判冲突，
+       并沿「让位依赖链」反向传播——防止链式改名在末端断裂后
+       中途环节误判可执行、造成磁盘文件被覆盖。
+    """
+    n = len(entries)
+    # 每个条目只转换一次；同名占用按目录分组，故设置按组内唯一。
+    transformed = [transform_name(e.name, rules, i) for i, e in enumerate(entries)]
+    statuses = [STATUS_OK] * n
+    notes = [""] * n
+
+    # 按目录分组：目录 -> 组内条目索引（保持 entries 原有顺序）
+    by_dir: Dict[Path, List[int]] = {}
     for i, e in enumerate(entries):
-        new_name = transform_name(e.name, rules, i)
-        status = STATUS_OK
-        note = ""
+        by_dir.setdefault(e.path.parent, []).append(i)
 
-        if not new_name:
-            status = STATUS_ERROR
-            note = "转换结果为空"
-        elif new_name == e.name:
-            status = STATUS_UNCHANGED
-            note = "名称未变化"
-        elif has_invalid_chars(new_name):
-            status = STATUS_ERROR
-            note = "包含非法字符"
-        elif new_name in new_name_owners:
-            status = STATUS_CONFLICT
-            note = f"与「{new_name_owners[new_name]}」目标重名"
-        elif (e.path.parent / new_name).exists() and new_name not in old_set:
-            status = STATUS_CONFLICT
-            note = "磁盘上已存在同名文件"
-        else:
-            new_name_owners[new_name] = e.name
+    for idxs in by_dir.values():
+        index_by_old = {e.name: idx for idx, e in zip(idxs, (entries[i] for i in idxs))}
+        owners: Dict[str, str] = {}              # 新名 -> 声明者原名（组内）
+        dependents: Dict[int, List[int]] = {}    # 让位者索引 -> 依赖它的条目索引列表
 
-        results.append(PreviewItem(e, e.name, new_name, status, note))
+        for idx in idxs:
+            e = entries[idx]
+            new_name = transformed[idx]
+            if not new_name:
+                statuses[idx] = STATUS_ERROR
+                notes[idx] = "转换结果为空"
+            elif new_name == e.name:
+                statuses[idx] = STATUS_UNCHANGED
+                notes[idx] = "名称未变化"
+            elif has_invalid_chars(new_name):
+                statuses[idx] = STATUS_ERROR
+                notes[idx] = "包含非法字符"
+            elif new_name in owners:
+                statuses[idx] = STATUS_CONFLICT
+                notes[idx] = f"与「{owners[new_name]}」目标重名"
+            elif (e.path.parent / new_name).exists():
+                holder = index_by_old.get(new_name)
+                if holder is not None:
+                    # 目标原名主在本目录名单内：换入依赖其让位（能否让位由传播阶段裁决）
+                    dependents.setdefault(holder, []).append(idx)
+                    owners[new_name] = e.name
+                else:
+                    statuses[idx] = STATUS_CONFLICT
+                    notes[idx] = "磁盘上已存在同名文件"
+            else:
+                owners[new_name] = e.name
 
-    return results
+        # 组内冲突传播：一切不会执行改名的条目（unchanged/error/conflict）都不会
+        # 让位，依赖它们让位的条目随之判冲突，并沿依赖链继续反向传播到链头。
+        queue = [i for i in idxs if statuses[i] != STATUS_OK]
+        done = set(queue)
+        while queue:
+            holder = queue.pop()
+            for j in dependents.get(holder, ()):
+                if j in done:
+                    continue
+                statuses[j] = STATUS_CONFLICT
+                notes[j] = f"依赖「{entries[holder].name}」让位，但其改名无法执行"
+                done.add(j)
+                queue.append(j)
+
+    return [PreviewItem(e, e.name, transformed[i], statuses[i], notes[i])
+            for i, e in enumerate(entries)]
 
 
 # ---------------------------------------------------------------- 执行与撤销

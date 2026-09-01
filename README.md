@@ -40,7 +40,7 @@ PowerRenamePy/
 │   ├── ui.py                # tkinter 图形界面
 │   └── rename_engine.py     # 核心引擎：规则、转换、预览、冲突检测、执行、撤销
 ├── tests/
-│   ├── test_engine.py       # 引擎自动化测试（41 个用例）
+│   ├── test_engine.py       # 引擎自动化测试（47 个用例）
 │   └── test_cli.py          # CLI 自动化测试（8 个用例）
 ├── scripts/                 # 构建与工具脚本
 │   ├── build_arm64.sh       # ARM64 Linux 目标机一键打包脚本
@@ -176,7 +176,7 @@ scripts\build_arm64_docker.bat
 ## 测试
 
 ```bash
-python -m unittest tests.test_engine   # 41 个用例：规则转换 / 编号索引 / 作用范围 / 冲突 / 互换重命名 / 撤销 / 清单映射 / 方案序列化 / 导出清单 / 树形加载
+python -m unittest tests.test_engine   # 47 个用例：规则转换 / 编号索引 / 作用范围 / 冲突 / 互换重命名 / 撤销 / 清单映射 / 方案序列化 / 导出清单 / 树形加载 / 跨目录同名
 python -m unittest tests.test_cli      # 8 个用例：dry-run / 执行 / 部分命中 / GBK 清单 / 缺参 / 空清单 / 目录不存在
 ```
 
