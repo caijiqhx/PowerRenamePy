@@ -333,7 +333,7 @@ impl RenameApp {
 
 impl eframe::App for RenameApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::TopBottomPanel::top("top").show(ctx, |ui| {
+        egui::TopBottomPanel::top("top").frame(panel_frame()).show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label("目录：");
                 ui.add(
@@ -375,7 +375,7 @@ impl eframe::App for RenameApp {
             });
         });
 
-        egui::TopBottomPanel::bottom("bottom").show(ctx, |ui| {
+        egui::TopBottomPanel::bottom("bottom").frame(panel_frame()).show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label(&self.status_msg);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -389,7 +389,7 @@ impl eframe::App for RenameApp {
             });
         });
 
-        egui::SidePanel::left("rules").resizable(true).default_width(320.0).show(ctx, |ui| {
+        egui::SidePanel::left("rules").resizable(true).default_width(320.0).frame(panel_frame()).show(ctx, |ui| {
             ui.heading("规则");
             ui.horizontal(|ui| {
                 let mut add_replace = false;
@@ -501,7 +501,7 @@ impl eframe::App for RenameApp {
             }
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().frame(panel_frame()).show(ctx, |ui| {
             ui.heading("预览");
             egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
                 if let Some(tree) = &self.tree {
@@ -568,11 +568,53 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| {
             install_chinese_font(&cc.egui_ctx);
-            // 浅色主题
-            cc.egui_ctx.set_theme(egui::Theme::Light);
+            install_light_theme(&cc.egui_ctx);
             Ok(Box::new(RenameApp::new()))
         }),
     )
+}
+
+/// 安装定制的浅色主题：浅灰背景、白色面板、控件带边框、按钮有悬停/按下反馈。
+fn install_light_theme(ctx: &egui::Context) {
+    let mut visuals = egui::Visuals::light();
+
+    // 背景：浅灰而非纯白，避免"一片白"
+    visuals.panel_fill = egui::Color32::from_rgb(0xF2, 0xF3, 0xF5);
+    visuals.window_fill = egui::Color32::WHITE;
+    visuals.extreme_bg_color = egui::Color32::from_rgb(0xE8, 0xEA, 0xED);
+
+    // 控件边框 + 圆角，让按钮/输入框有轮廓
+    let border = egui::Color32::from_rgb(0xC8, 0xCB, 0xCF);
+    let accent = egui::Color32::from_rgb(0x2F, 0x6F, 0xD5); // 蓝色强调
+
+    for w in [
+        &mut visuals.widgets.inactive,
+        &mut visuals.widgets.hovered,
+        &mut visuals.widgets.active,
+    ] {
+        w.bg_stroke = egui::Stroke::new(1.0, border);
+        w.corner_radius = egui::CornerRadius::same(4);
+    }
+    // 按钮/控件：白底 + 边框；悬停轻微变蓝、按下蓝色边框
+    visuals.widgets.inactive.bg_fill = egui::Color32::WHITE;
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, accent);
+    visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(0xE8, 0xF0, 0xFB);
+    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.5, accent);
+    visuals.widgets.active.bg_fill = egui::Color32::from_rgb(0xD6, 0xE4, 0xF7);
+
+    // 选中项背景
+    visuals.selection.bg_fill = egui::Color32::from_rgb(0xCF, 0xE0, 0xF8);
+
+    ctx.set_visuals(visuals);
+}
+
+/// 面板统一样式：白底 + 浅灰边框 + 内边距，让各区域有清晰分隔。
+fn panel_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(egui::Color32::WHITE)
+        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0xD0, 0xD3, 0xD7)))
+        .inner_margin(egui::Margin::same(8))
+        .corner_radius(egui::CornerRadius::same(0))
 }
 
 /// 安装中文字体（egui 默认字体不含中文，需加载系统字体，否则中文显示为乱码/方框）。
