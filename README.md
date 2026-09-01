@@ -7,6 +7,7 @@
 ## 功能特性
 
 - **规则流水线**：支持按顺序叠加多条规则，规则可增删、上移/下移、清空
+- **规则方案**：将当前规则保存为 `.json` 方案文件，随时加载复用（清单映射一并保存）
 - **规则类型**
   | 类型 | 说明 |
   |---|---|
@@ -33,10 +34,12 @@
 PowerRenamePy/
 ├── src/                     # 源码
 │   ├── main.py              # 程序入口（python src/main.py）
+│   ├── cli.py               # 命令行入口（python src/cli.py，复用引擎，无需 GUI）
 │   ├── ui.py                # tkinter 图形界面
 │   └── rename_engine.py     # 核心引擎：规则、转换、预览、冲突检测、执行、撤销
 ├── tests/
-│   └── test_engine.py       # 引擎自动化测试（24 个用例）
+│   ├── test_engine.py       # 引擎自动化测试（30 个用例）
+│   └── test_cli.py          # CLI 自动化测试（7 个用例）
 ├── scripts/                 # 构建与工具脚本
 │   ├── build_arm64.sh       # ARM64 Linux 目标机一键打包脚本
 │   ├── build_arm64_docker.bat  # Windows 上一键执行 Docker 模拟打包
@@ -67,6 +70,22 @@ python src/main.py
 > **要求**：Python 3.10+，且需自带 tkinter。
 > Windows 官方 python.org 安装包、Anaconda / Miniconda 均默认包含 tkinter；
 > 部分精简版（如某些嵌入式发行版）不带，需改用完整版 Python。
+
+### 方式三：命令行（CLI，无需 GUI）
+
+复用核心引擎，适合脚本化 / 服务器批量改名。默认**预览**（dry-run），加 `--apply` 才真正执行：
+
+```bash
+python src/cli.py /path/to/dir --prefix IMG_            # 预览（不实际改名）
+python src/cli.py /path/to/dir --prefix IMG_ --apply    # 真正执行
+python src/cli.py /path/to/dir --list rename_list.txt   # 按清单改名
+python src/cli.py /path/to/dir --preset preset.json --apply  # 加载 GUI 保存的方案
+```
+
+支持的内联规则：`--prefix` `--suffix` `--replace OLD NEW` `--regex PAT REPL`
+`--lower/--upper/--title` `--ext EXT` `--number`（配 `--start/--step/--digits/--sep`）
+`--strip CHARS` `--trim`（配 `--underscore`）。目录筛选：`--include/--exclude`
+`--recursive/--no-recursive` `--only-files/--dirs` `--regex-filter`。
 
 ## 打包为 exe（在 Windows 上）
 
@@ -139,8 +158,9 @@ scripts\build_arm64_docker.bat
 3. **按清单重命名**：点击工具栏「导入清单…」，选择 txt/csv 文件，每行一条 `原名 → 新名`；
    支持分隔符 `→` / `->` / `=>` / Tab / 逗号 / 分号 / 竖线 / 连续空格，自动识别 UTF-8 / GBK 编码。
    导入后自动添加一条"按清单重命名"规则；未匹配清单的文件保持原名
-4. 右侧预览即时更新：绿色=就绪，红色=冲突/错误，灰色=无变化
-5. 确认无误后点击「应用重命名」；如需恢复，点击「撤销上次」
+4. **保存/加载规则方案**：点「保存方案…」将当前规则存为 `.json`，下次「加载方案…」一键恢复
+5. 右侧预览即时更新：绿色=就绪，红色=冲突/错误，灰色=无变化
+6. 确认无误后点击「应用重命名」；如需恢复，点击「撤销上次」
 
 ## 实现原理
 
@@ -156,11 +176,12 @@ scripts\build_arm64_docker.bat
 ## 测试
 
 ```bash
-python -m unittest tests.test_engine   # 24 个用例：规则转换 / 编号索引 / 作用范围 / 冲突 / 互换重命名 / 撤销 / 清单映射
+python -m unittest tests.test_engine   # 30 个用例：规则转换 / 编号索引 / 作用范围 / 冲突 / 互换重命名 / 撤销 / 清单映射 / 方案序列化
+python -m unittest tests.test_cli      # 7 个用例：dry-run / 执行 / 方案 / 清单 / 内联规则 / 筛选
 ```
 
 ## 说明与限制
 
-- 撤销栈仅保存在内存中，程序退出后无法恢复
-- 引擎与 GUI 解耦：`src/rename_engine.py` 不依赖 tkinter，可复用做 CLI 或自动化
+- 撤销栈仅保存在内存中，程序退出后无法恢复（GUI）
+- 引擎与 GUI 解耦：`src/rename_engine.py` 不依赖 tkinter，CLI（`src/cli.py`）在无图形环境也能用
 - 不处理超长路径 / 跨卷移动，仅支持同一目录内改名
