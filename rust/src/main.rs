@@ -568,6 +568,8 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| {
             install_chinese_font(&cc.egui_ctx);
+            // 浅色主题
+            cc.egui_ctx.set_theme(egui::Theme::Light);
             Ok(Box::new(RenameApp::new()))
         }),
     )
