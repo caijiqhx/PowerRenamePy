@@ -588,9 +588,15 @@ fn install_chinese_font(ctx: &egui::Context) {
     let mut installed = false;
     for path in candidates {
         if let Ok(bytes) = std::fs::read(path) {
+            let mut font_data = egui::FontData::from_owned(bytes);
+            // 中文字形基线偏高（CJK 字体常见）：整体下移 0.2 字号，与英文基线对齐
+            font_data.tweak = egui::FontTweak {
+                y_offset_factor: 0.2,
+                ..Default::default()
+            };
             fonts.font_data.insert(
                 "chinese".to_owned(),
-                egui::FontData::from_owned(bytes).into(),
+                font_data.into(),
             );
             installed = true;
             break;
