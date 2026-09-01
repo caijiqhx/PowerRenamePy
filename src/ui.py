@@ -63,6 +63,8 @@ class PowerRenameApp:
 
         self.tree_root = None        # TreeNode 根节点（目录结构树）
         self.renameable_nodes = []   # 可参与改名的节点（展平过滤）
+        self._total_node_count = 0   # 结构节点总数缓存（避免 refresh 重复展平）
+        self._tree_built = False     # 预览树是否已完成首次构建（此后仅更新值）
         self.preview = []
         self.rules: list[RenameRule] = []
         self.undo_mgr = UndoManager()
@@ -363,41 +365,45 @@ class PowerRenameApp:
         preview_by_path = {str(it.entry.path): it for it in self.preview}
 
         tree = self.preview_tree
-        tree.delete(*tree.get_children())
+
+        def node_vals(node) -> tuple:
+            item = preview_by_path.get(str(node.path))
+            if item is not None:
+                return ((item.new_name, STATUS_LABELS[item.status], item.note),
+                        (item.status,))
+            if node.is_dir:
+                return (("", "", ""), ("dir",))
+            return (("", "", ""), ("skipped",))
 
         def insert_node(node, parent_iid: str) -> None:
             iid = str(node.path)
-            item = preview_by_path.get(iid)
-            if node.is_dir:
-                if item is not None:
-                    # 目录参与改名：按预览状态显示
-                    tags = (item.status,)
-                    vals = (item.new_name, STATUS_LABELS[item.status], item.note)
-                else:
-                    tags = ("dir",)
-                    vals = ("", "", "")
-            else:
-                if item is not None:
-                    tags = (item.status,)
-                    vals = (item.new_name, STATUS_LABELS[item.status], item.note)
-                else:
-                    # 被筛掉的节点：仅结构展示
-                    tags = ("skipped",)
-                    vals = ("", "", "")
+            vals, tags = node_vals(node)
             tree.insert(parent_iid, "end", iid=iid, text=node.name,
                         values=vals, tags=tags, open=node.is_dir)
             for c in node.children:
                 insert_node(c, iid)
 
+        def update_node(node) -> None:
+            vals, tags = node_vals(node)
+            tree.item(str(node.path), values=vals, tags=tags)
+            for c in node.children:
+                update_node(c)
+
         if self.tree_root is not None:
-            insert_node(self.tree_root, "")
+            if self._tree_built:
+                # 结构未变：只更新已有行的值/样式，不重建
+                update_node(self.tree_root)
+            else:
+                tree.delete(*tree.get_children())
+                insert_node(self.tree_root, "")
+                self._tree_built = True
 
         n_ok = sum(1 for it in self.preview if it.status == STATUS_OK)
         n_conf = sum(1 for it in self.preview if it.status == STATUS_CONFLICT)
         n_err = sum(1 for it in self.preview if it.status == STATUS_ERROR)
         n_unch = sum(1 for it in self.preview if it.status == STATUS_UNCHANGED)
         n_total = len(self.preview)
-        n_skip = (len(flatten_tree(self.tree_root)) if self.tree_root else 0) - n_total
+        n_skip = self._total_node_count - n_total
         self.stats_var.set(
             f"共 {n_total + n_skip} 个节点  |  可改名 {n_total}  |  将重命名 {n_ok}  |  "
             f"冲突 {n_conf}  |  错误 {n_err}  |  无变化 {n_unch}  |  跳过 {n_skip}")
@@ -620,6 +626,8 @@ class PowerRenameApp:
             use_regex=self.regex_var.get(),
         )
         self.renameable_nodes = [n for n in flatten_tree(self.tree_root) if n.renameable]
+        self._total_node_count = len(flatten_tree(self.tree_root))
+        self._tree_built = False  # 目录结构已变，强制重建预览树
         self.refresh_preview()
         n_files = sum(1 for n in self.renameable_nodes if not n.is_dir)
         n_dirs = sum(1 for n in self.renameable_nodes if n.is_dir)
@@ -628,7 +636,7 @@ class PowerRenameApp:
             parts.append(f"{n_files} 个文件")
         if n_dirs:
             parts.append(f"{n_dirs} 个文件夹")
-        self._set_status(f"已加载结构节点 {len(flatten_tree(self.tree_root))} 个"
+        self._set_status(f"已加载结构节点 {self._total_node_count} 个"
                          f"（可改名：{'、'.join(parts) if parts else '无'}），来自 {p}")
 
     def _apply(self) -> None:

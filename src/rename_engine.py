@@ -605,22 +605,25 @@ def load_tree(
 
     def walk(node: TreeNode, limit_depth: int) -> None:
         try:
-            paths = sorted(node.path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+            with os.scandir(node.path) as it:
+                entries = list(it)  # DirEntry：is_dir() 复用缓存，避免重复 stat
         except OSError:
             return
-        for child_path in paths:
+        paths = sorted(entries, key=lambda d: (not d.is_dir(), d.name.lower()))
+        for de in paths:
             try:
-                is_dir = child_path.is_dir()
+                is_dir = de.is_dir()
             except OSError:
                 continue
-            child = TreeNode(child_path, child_path.name, is_dir)
+            child_path = node.path / de.name
+            child = TreeNode(child_path, de.name, is_dir)
             if is_dir:
-                child.renameable = include_dirs and name_ok(child.name)
+                child.renameable = include_dirs and name_ok(de.name)
                 if limit_depth != 0:
                     walk(child, limit_depth - 1)
                 node.children.append(child)
             else:
-                child.renameable = include_files and name_ok(child.name)
+                child.renameable = include_files and name_ok(de.name)
                 node.children.append(child)
 
     walk(root, -1 if recursive else 0)
