@@ -558,12 +558,41 @@ impl eframe::App for RenameApp {
                         mapping: std::collections::HashMap::new(),
                     });
                 }
+            });
+            ui.horizontal(|ui| {
+                ui.label("管理：");
                 if ui.button("删除").clicked() {
                     if let Some(idx) = self.selected_rule {
                         if idx < self.rules.len() {
                             self.rules.remove(idx);
                             self.selected_rule = None;
+                            self.reload();
                         }
+                    }
+                }
+                if ui.button("↑").clicked() {
+                    if let Some(idx) = self.selected_rule {
+                        if idx > 0 && idx < self.rules.len() {
+                            self.rules.swap(idx, idx - 1);
+                            self.selected_rule = Some(idx - 1);
+                            self.reload();
+                        }
+                    }
+                }
+                if ui.button("↓").clicked() {
+                    if let Some(idx) = self.selected_rule {
+                        if idx + 1 < self.rules.len() {
+                            self.rules.swap(idx, idx + 1);
+                            self.selected_rule = Some(idx + 1);
+                            self.reload();
+                        }
+                    }
+                }
+                if ui.button("清空").clicked() {
+                    if !self.rules.is_empty() {
+                        self.rules.clear();
+                        self.selected_rule = None;
+                        self.reload();
                     }
                 }
             });
