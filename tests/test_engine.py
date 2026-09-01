@@ -37,6 +37,8 @@ from src.rename_engine import (
     load_entries,
     make_rule,
     parse_rename_list,
+    serialize_rules,
+    deserialize_rules,
     transform_name,
 )
 
@@ -170,6 +172,17 @@ class TestTransform(unittest.TestCase):
             self.assertTrue((root / "photo1.jpg").exists())
             self.assertFalse((root / "wedding1.jpg").exists())
 
+    def test_list_mapping_stacks_with_pipeline(self):
+        """RULE_LIST 与前后规则叠加：命中=清单覆盖前序，未命中=保留；后续规则继续叠加。"""
+        m = {"a.txt": "aa.txt"}
+        # 前缀在前、清单在后：命中文件直接用清单名（覆盖前缀）；未命中保留前缀
+        r2 = [make_rule(RULE_PREFIX, text="pre_"), make_rule(RULE_LIST, mapping=m)]
+        self.assertEqual(transform_name("a.txt", r2), "aa.txt")
+        self.assertEqual(transform_name("c.txt", r2), "pre_c.txt")
+        # 清单在前、前缀在后：清单名上继续叠加前缀
+        r3 = [make_rule(RULE_LIST, mapping=m), make_rule(RULE_PREFIX, text="pre_")]
+        self.assertEqual(transform_name("a.txt", r3), "pre_aa.txt")
+
 
 class TestPreview(unittest.TestCase):
     def _mk_entries(self, names):
@@ -296,6 +309,45 @@ class TestLoadEntries(unittest.TestCase):
 
             regex = load_entries(root, recursive=False, inc_text=r"pic\d", use_regex=True)
             self.assertEqual([e.name for e in regex], ["pic1.jpg", "pic2.jpg"])
+
+
+class TestSerializeRules(unittest.TestCase):
+    def test_roundtrip(self):
+        rules = [
+            make_rule(RULE_PREFIX, text="pre_"),
+            make_rule(RULE_REPLACE, search="old", replace="new", case_sensitive=True),
+            make_rule(RULE_LIST, mapping={"a.txt": "b.txt"}),
+        ]
+        restored = deserialize_rules(serialize_rules(rules))
+        self.assertEqual(len(restored), 3)
+        for orig, r in zip(rules, restored):
+            self.assertEqual(orig.rule_type, r.rule_type)
+            self.assertEqual(orig.params, r.params)
+
+    def test_unknown_type_skipped(self):
+        # 序列化里混入未知类型 -> 反序列化应跳过
+        rules = deserialize_rules(
+            '[{"rule_type":"unknown","params":{}},'
+            '{"rule_type":"prefix","params":{"text":"x"}}]')
+        self.assertEqual(len(rules), 1)
+        self.assertEqual(rules[0].rule_type, RULE_PREFIX)
+
+    def test_invalid_json_returns_empty(self):
+        self.assertEqual(deserialize_rules("not json"), [])
+        self.assertEqual(deserialize_rules("{bad"), [])
+        self.assertEqual(deserialize_rules('{"a":1}'), [])  # 非列表
+        self.assertEqual(deserialize_rules(""), [])
+
+    def test_missing_params_filled_with_defaults(self):
+        rules = deserialize_rules('[{"rule_type":"number","params":{}}]')
+        self.assertEqual(rules[0].params["start"], 1)
+        self.assertEqual(rules[0].params["step"], 1)
+        self.assertEqual(rules[0].params["digits"], 2)
+
+    def test_unknown_param_filtered(self):
+        rules = deserialize_rules(
+            '[{"rule_type":"prefix","params":{"text":"hi","evil":"x"}}]')
+        self.assertEqual(rules[0].params, {"text": "hi"})
 
 
 if __name__ == "__main__":

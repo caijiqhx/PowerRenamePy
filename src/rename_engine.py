@@ -20,6 +20,7 @@ PowerRenamePy 核心重命名引擎。
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import uuid
@@ -186,6 +187,49 @@ def make_rule(rule_type: str, **params) -> RenameRule:
     return rule
 
 
+# ---------------------------------------------------------------- 规则方案序列化
+def serialize_rules(rules: List[RenameRule]) -> str:
+    """把规则列表序列化为 JSON 字符串（含规则类型与参数），用于保存/分享方案。"""
+    payload = [
+        {"rule_type": r.rule_type, "params": r.params}
+        for r in rules
+    ]
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def deserialize_rules(text: str) -> List[RenameRule]:
+    """
+    从 JSON 字符串恢复规则列表。
+    - 忽略未知/不支持的类型（如旧版本删除的规则）
+    - 缺失的参数用缺省值补齐
+    - 无效 JSON / 非列表则返回空列表
+    """
+    try:
+        payload = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(payload, list):
+        return []
+
+    rules: List[RenameRule] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        rt = item.get("rule_type")
+        if rt not in TYPE_BY_ID:
+            continue
+        rule = default_rule(rt)
+        params = item.get("params")
+        if isinstance(params, dict):
+            # 仅接受该规则类型定义的字段，避免混入非法参数
+            allowed = {f.key for f in TYPE_BY_ID[rt].fields}
+            for k, v in params.items():
+                if k in allowed:
+                    rule.params[k] = v
+        rules.append(rule)
+    return rules
+
+
 def rule_summary(rule: RenameRule) -> str:
     p = rule.params
     rt = rule.rule_type
@@ -227,6 +271,17 @@ _RENAME_LIST_SEPARATORS = re.compile(r"\s*[→,;|\t]\s*|->|=>|,|\t|\s{2,}")
 _RENAME_LIST_COMMENT_RE = re.compile(r"^\s*#|#\s*$")
 
 
+def read_text_auto_encoding(path, fallback: str = "utf-8") -> str:
+    """读取文本文件，自动识别编码（优先 UTF-8-sig / UTF-8，失败回退 GBK，再回退指定编码）。"""
+    raw = Path(path).read_bytes()
+    for enc in ("utf-8-sig", "utf-8", "gbk", fallback):
+        try:
+            return raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return raw.decode(fallback, errors="replace")
+
+
 def parse_rename_list(text: str) -> Dict[str, str]:
     """
     解析「原名→新名」清单文本，返回 {原名: 新名} 映射。
@@ -255,7 +310,7 @@ def _split_ext(name: str) -> Tuple[str, str]:
     return os.path.splitext(name)  # ("main", ".txt")；无扩展名时 ext == ""
 
 
-def _apply_rule(name: str, rule: RenameRule, index: int) -> str:
+def _apply_rule(name: str, rule: RenameRule, index: int, original_name: Optional[str] = None) -> str:
     rt = rule.rule_type
     p = rule.params
     if not name:
@@ -292,8 +347,11 @@ def _apply_rule(name: str, rule: RenameRule, index: int) -> str:
         return out
 
     if rt == RULE_LIST:
-        # 按清单重命名：匹配到原名则替换为清单中的新名，否则保持原名
-        return str(p.get("mapping", {}).get(name, name))
+        # 按清单重命名：始终用「原始文件名」匹配清单。命中则采用清单新名
+        # （后续规则继续在其上叠加）；未命中则保持当前流水线值。
+        key = original_name if original_name is not None else name
+        mapped = str(p.get("mapping", {}).get(key, key))
+        return mapped if mapped != key else name
 
     # 以下规则支持作用范围
     scope = p.get("scope", SCOPE_FULL)
@@ -352,9 +410,14 @@ def _apply_rule(name: str, rule: RenameRule, index: int) -> str:
 
 
 def transform_name(name: str, rules: List[RenameRule], index: int = 0) -> str:
-    """按顺序依次应用全部规则，返回新文件名。"""
+    """按顺序依次应用全部规则，返回新文件名。
+
+    各规则处理的是前一条规则输出（线性流水线）；RULE_LIST（按清单重命名）
+    例外：始终用「传入的原始文件名」做清单匹配，命中则从清单新名继续。
+    """
+    original = name
     for rule in rules:
-        name = _apply_rule(name, rule, index)
+        name = _apply_rule(name, rule, index, original_name=original)
         if not name:
             break
     return name

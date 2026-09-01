@@ -32,22 +32,13 @@ from rename_engine import (
     compute_preview,
     default_rule,
     load_entries,
+    deserialize_rules,
     make_rule,
     parse_rename_list,
+    read_text_auto_encoding,
     rule_summary,
+    serialize_rules,
 )
-
-
-def _read_text_auto_encoding(path: Path, fallback: str = "utf-8") -> str:
-    """读取文本文件，自动识别编码（优先 UTF-8，失败回退 GBK，再回退指定编码）。"""
-    raw = path.read_bytes()
-    for enc in ("utf-8-sig", "utf-8", "gbk", fallback):
-        try:
-            return raw.decode(enc)
-        except (UnicodeDecodeError, LookupError):
-            continue
-    return raw.decode(fallback, errors="replace")
-
 
 # 预览表格行配色（浅色主题）
 _TAG_COLORS = {
@@ -93,6 +84,9 @@ class PowerRenameApp:
         ttk.Button(bar, text="浏览…", command=self._browse).pack(side=tk.LEFT)
         ttk.Button(bar, text="加载", command=self.load_files).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(bar, text="导入清单…", command=self._import_rename_list).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Separator(bar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=6)
+        ttk.Button(bar, text="保存方案…", command=self._save_preset).pack(side=tk.LEFT)
+        ttk.Button(bar, text="加载方案…", command=self._load_preset).pack(side=tk.LEFT, padx=(6, 0))
 
         row2 = ttk.Frame(self.root, padding=(10, 2, 10, 4))
         row2.pack(side=tk.TOP, fill=tk.X)
@@ -432,7 +426,7 @@ class PowerRenameApp:
             return
         path = Path(raw_path)
         try:
-            text = _read_text_auto_encoding(path)
+            text = read_text_auto_encoding(path)
         except OSError as exc:
             messagebox.showerror("导入清单", f"读取文件失败：\n{exc}")
             return
@@ -488,6 +482,55 @@ class PowerRenameApp:
             text.insert(tk.END, f"{old}  →  {new}\n")
         text.config(state=tk.DISABLED)
         ttk.Button(win, text="关闭", command=win.destroy).pack(pady=6)
+
+    # ------------------------------------------------------------ 规则方案（保存/加载）
+    def _save_preset(self) -> None:
+        """把当前规则列表保存为 .json 方案文件。"""
+        if not self.rules:
+            messagebox.showinfo("保存方案", "当前没有可保存的规则。")
+            return
+        path = filedialog.asksaveasfilename(
+            title="保存规则方案",
+            defaultextension=".json",
+            filetypes=[("规则方案", "*.json"), ("所有文件", "*.*")],
+            initialfile="rename_preset.json",
+            initialdir=str(Path.home()),
+        )
+        if not path:
+            return
+        try:
+            Path(path).write_text(serialize_rules(self.rules), encoding="utf-8")
+        except OSError as exc:
+            messagebox.showerror("保存方案", f"写入失败：\n{exc}")
+            return
+        self._set_status(f"已保存规则方案：{Path(path).name}（{len(self.rules)} 条规则）")
+
+    def _load_preset(self) -> None:
+        """从 .json 方案文件加载规则（覆盖当前规则列表）。"""
+        path = filedialog.askopenfilename(
+            title="加载规则方案",
+            filetypes=[("规则方案", "*.json"), ("所有文件", "*.*")],
+            initialdir=str(Path.home()),
+        )
+        if not path:
+            return
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            messagebox.showerror("加载方案", f"读取失败：\n{exc}")
+            return
+        rules = deserialize_rules(text)
+        if not rules:
+            messagebox.showwarning("加载方案", "文件中没有有效的规则。")
+            return
+        if self.rules:
+            if not messagebox.askyesno("加载方案", "加载将覆盖当前规则列表，继续？"):
+                return
+        self.rules = rules
+        self._refresh_rules_tree(select_index=0)
+        self._build_rule_form()
+        self.refresh_preview()
+        self._set_status(f"已加载规则方案：{Path(path).name}（{len(rules)} 条规则）")
 
     def load_files(self, *_a) -> None:
         raw = self.dir_var.get().strip()
