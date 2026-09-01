@@ -184,6 +184,18 @@ struct PreviewRow {
     note: String,
 }
 
+/// 预览区右键菜单待执行动作（渲染时收集，面板结束后统一处理）。
+#[derive(Debug)]
+enum PreviewAction {
+    None,
+    /// 打开文件夹
+    Open(std::path::PathBuf),
+    /// 打开所在文件夹（资源管理器定位文件）
+    Reveal(std::path::PathBuf),
+    /// 刷新预览
+    Refresh,
+}
+
 struct RenameApp {
     dir_input: String,
     recursive: bool,
@@ -201,6 +213,8 @@ struct RenameApp {
     preview_by_path: std::collections::HashMap<std::path::PathBuf, PreviewRow>,
     /// 预览树中「已展开」的目录路径
     expanded: std::collections::HashSet<std::path::PathBuf>,
+    /// 清单映射查看窗口（存规则序号，None=关闭）
+    mapping_view: Option<usize>,
     status_msg: String,
     undo: UndoManager,
 }
@@ -220,6 +234,7 @@ impl RenameApp {
             tree: None,
             preview_by_path: std::collections::HashMap::new(),
             expanded: std::collections::HashSet::new(),
+            mapping_view: None,
             status_msg: String::new(),
             undo: UndoManager::new(),
         }
@@ -658,6 +673,9 @@ impl eframe::App for RenameApp {
                         RuleForm::List { mapping } => {
                             ui.label(format!("按清单重命名：{} 条映射（导入自 CSV/文本）", mapping.len()));
                             ui.label("清单规则按「原始文件名」匹配，命中则采用清单新名。");
+                            if ui.button("查看映射…").clicked() {
+                                self.mapping_view = Some(idx);
+                            }
                         }
                     }
                     // 作用范围（仅带 scope 的规则适用；List/Prefix/Suffix/Number/Ext/Trim 不适用）
@@ -692,6 +710,9 @@ impl eframe::App for RenameApp {
             }
         });
 
+        // 预览右键菜单待执行动作（渲染时收集，面板结束后统一处理）
+        let mut action: PreviewAction = PreviewAction::None;
+
         egui::CentralPanel::default().frame(panel_frame()).show(ctx, |ui| {
             ui.heading("预览");
             if let Some(tree) = &self.tree {
@@ -717,11 +738,15 @@ impl eframe::App for RenameApp {
                         });
                         header.col(|ui| {
                             ui.strong("说明");
+                            // 表头右键：刷新预览
+                            if ui.response().secondary_clicked() {
+                                action = PreviewAction::Refresh;
+                            }
                         });
                     })
                     .body(|mut body| {
                         // 根目录恒可见（且默认展开）；子节点仅当其父目录展开时才渲染
-                        render_tree_rows(&mut body, tree, &self.preview_by_path, &mut self.expanded, true, true, 0);
+                        render_tree_rows(&mut body, tree, &self.preview_by_path, &mut self.expanded, &mut action, true, true, 0);
                         if tree.children.is_empty() {
                             body.row(22.0, |mut row| {
                                 row.col(|ui| {
@@ -737,6 +762,53 @@ impl eframe::App for RenameApp {
                 ui.label("（未加载目录）");
             }
         });
+
+        // 清单映射查看窗口
+        if let Some(idx) = self.mapping_view {
+            if idx < self.rules.len() {
+                if let RuleForm::List { mapping } = &self.rules[idx] {
+                    let mut open = true;
+                    egui::Window::new(format!("清单映射（规则 #{}）", idx + 1))
+                        .open(&mut open)
+                        .default_size([360.0, 400.0])
+                        .show(ctx, |ui| {
+                            ui.label(format!("共 {} 条映射：", mapping.len()));
+                            ui.separator();
+                            egui::ScrollArea::vertical().auto_shrink([false, false]).max_height(340.0).show(ui, |ui| {
+                                // 按原名排序展示（稳定）
+                                let mut pairs: Vec<(&String, &String)> = mapping.iter().collect();
+                                pairs.sort_by(|a, b| a.0.cmp(b.0));
+                                for (from, to) in pairs {
+                                    ui.horizontal(|ui| {
+                                        ui.label(format!("{from}  →  {to}"));
+                                    });
+                                }
+                            });
+                        });
+                    if !open {
+                        self.mapping_view = None;
+                    }
+                } else {
+                    // 规则类型变化（如被替换）→ 关闭
+                    self.mapping_view = None;
+                }
+            } else {
+                self.mapping_view = None;
+            }
+        }
+
+        // 处理右键菜单动作
+        match action {
+            PreviewAction::Open(path) => {
+                let _ = std::process::Command::new("explorer").arg(&path).spawn();
+            }
+            PreviewAction::Reveal(path) => {
+                // 打开所在文件夹并选中文件（Windows: explorer /select,）
+                let _ = std::process::Command::new("explorer").args(["/select,", &path.to_string_lossy()]).spawn();
+            }
+            PreviewAction::Refresh => self.reload(),
+            PreviewAction::None => {}
+        }
     }
 }
 
@@ -744,11 +816,13 @@ impl eframe::App for RenameApp {
 ///
 /// 目录行：第一列显示带缩进的「📁 名字」+ 折叠三角（点击切换展开）；
 /// 文件行：显示原名/新名/状态/说明。目录行本身不在预览映射中，后三列留空。
+/// 右键行：目录 → 打开文件夹；文件 → 打开所在文件夹；空白/表头 → 刷新预览。
 fn render_tree_rows(
     body: &mut egui_extras::TableBody,
     node: &power_rename::fs_tree::TreeNode,
     by_path: &std::collections::HashMap<std::path::PathBuf, PreviewRow>,
     expanded: &mut std::collections::HashSet<std::path::PathBuf>,
+    action: &mut PreviewAction,
     visible: bool,
     default_open: bool,
     depth: usize,
@@ -765,13 +839,16 @@ fn render_tree_rows(
                     ui.add_space(depth as f32 * 16.0);
                     let triangle = if is_open { "▾" } else { "▸" };
                     // 目录行用 selectable_label(false) 保留点击态但无「选中」高亮
-                    if ui.selectable_label(false, format!("{triangle} 📁 {}", node.name)).clicked() {
+                    let resp = ui.selectable_label(false, format!("{triangle} 📁 {}", node.name));
+                    if resp.clicked() {
                         let next = !is_open;
                         if next {
                             expanded.insert(node.path.clone());
                         } else {
                             expanded.remove(&node.path);
                         }
+                    } else if resp.secondary_clicked() {
+                        *action = PreviewAction::Open(node.path.clone());
                     }
                 });
             });
@@ -781,7 +858,7 @@ fn render_tree_rows(
         });
         if is_open {
             for child in &node.children {
-                render_tree_rows(body, child, by_path, expanded, true, false, depth + 1);
+                render_tree_rows(body, child, by_path, expanded, action, true, false, depth + 1);
             }
         }
         return;
@@ -809,7 +886,10 @@ fn render_tree_rows(
         row.col(|ui| {
             ui.horizontal(|ui| {
                 ui.add_space(depth as f32 * 16.0);
-                ui.label(format!("📄 {}", node.name));
+                let label = ui.label(format!("📄 {}", node.name));
+                if label.secondary_clicked() {
+                    *action = PreviewAction::Reveal(node.path.clone());
+                }
             });
         });
         row.col(|ui| {
