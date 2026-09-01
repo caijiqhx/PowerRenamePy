@@ -103,9 +103,9 @@ class PowerRenameApp:
         self.only_dirs_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(row2, text="包含子文件夹", variable=self.recursive_var,
                         command=self._schedule_reload).pack(side=tk.LEFT)
-        ttk.Checkbutton(row2, text="仅文件", variable=self.only_files_var,
+        ttk.Checkbutton(row2, text="包含文件", variable=self.only_files_var,
                         command=self._schedule_reload).pack(side=tk.LEFT, padx=(10, 0))
-        ttk.Checkbutton(row2, text="仅文件夹", variable=self.only_dirs_var,
+        ttk.Checkbutton(row2, text="包含文件夹", variable=self.only_dirs_var,
                         command=self._schedule_reload).pack(side=tk.LEFT, padx=(10, 0))
 
         ttk.Label(row2, text="包含:").pack(side=tk.LEFT, padx=(18, 2))
