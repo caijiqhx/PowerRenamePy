@@ -3,21 +3,43 @@
 use crate::rules::{Rule, Scope};
 
 /// 按顺序依次应用全部规则，返回新文件名。
+///
+/// 各规则处理的是前一条规则输出（线性流水线）；RULE_LIST（按清单重命名）
+/// 例外：始终用「传入的原始文件名」做清单匹配，命中则从清单新名继续。
 pub fn transform_name(name: &str, rules: &[Rule]) -> String {
+    let original = name.to_string();
+    transform_name_original(name, rules, &original)
+}
+
+/// 带原始文件名的变换（内部：流水线每一步都用原始名喂给 List 规则）。
+pub fn transform_name_original(name: &str, rules: &[Rule], original: &str) -> String {
     let mut cur = name.to_string();
     for rule in rules {
         if cur.is_empty() {
             break;
         }
-        cur = apply_rule(&cur, rule);
+        cur = apply_rule_original(&cur, rule, original);
     }
     cur
 }
 
-/// 应用单条规则（仅 Replace / Regex，带 scope 作用范围）。
+/// 应用单条规则（仅 Replace / Regex / List，带 scope 作用范围）。
 pub fn apply_rule(name: &str, rule: &Rule) -> String {
+    apply_rule_original(name, rule, name)
+}
+
+/// 应用单条规则（带原始文件名，供 List 规则使用）。
+pub fn apply_rule_original(name: &str, rule: &Rule, original: &str) -> String {
     if name.is_empty() {
         return name.to_string();
+    }
+
+    // 按清单重命名：始终用原始文件名匹配；命中则采用清单新名（后续规则继续叠加），未命中保持原名
+    if let Rule::List { mapping } = rule {
+        return match mapping.get(original) {
+            Some(mapped) if mapped != original => mapped.clone(),
+            _ => name.to_string(),
+        };
     }
 
     // Replace / Regex 均支持作用范围；先拆主名/扩展名
@@ -46,6 +68,7 @@ pub fn apply_rule(name: &str, rule: &Rule) -> String {
             }
             apply_regex(&target, pattern, replace)
         }
+        Rule::List { .. } => unreachable!("List handled above"),
     };
 
     match rule.scope() {
@@ -86,14 +109,6 @@ fn apply_regex(target: &str, pattern: &str, replace: &str) -> String {
     match fancy_regex::Regex::new(pattern) {
         Ok(re) => re.replace_all(target, replace).into_owned(),
         Err(_) => target.to_string(), // 编译失败（非法正则）→ 保持原名
-    }
-}
-
-impl Rule {
-    fn scope(&self) -> Scope {
-        match self {
-            Rule::Replace { scope, .. } | Rule::Regex { scope, .. } => *scope,
-        }
     }
 }
 

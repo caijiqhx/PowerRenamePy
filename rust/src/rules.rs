@@ -1,4 +1,6 @@
-//! 规则定义（Rust 移植范围：仅 查找替换 / 正则替换 两类）。
+//! 规则定义（Rust 移植范围：查找替换 / 正则替换 / 按清单重命名）。
+
+use std::collections::HashMap;
 
 /// 规则作用范围（对齐 Python 版 scope 语义）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +29,10 @@ pub enum Rule {
         replace: String,
         scope: Scope,
     },
+    /// 按清单重命名：始终用「原始文件名」匹配映射，命中则采用清单新名。
+    List {
+        mapping: HashMap<String, String>,
+    },
 }
 
 impl Rule {
@@ -45,6 +51,16 @@ impl Rule {
             Rule::Regex { pattern, replace, .. } => {
                 format!("正则 [{pattern}] → [{replace}]")
             }
+            Rule::List { mapping } => {
+                format!("清单 [{} 条映射]", mapping.len())
+            }
+        }
+    }
+
+    pub fn scope(&self) -> Scope {
+        match self {
+            Rule::Replace { scope, .. } | Rule::Regex { scope, .. } => *scope,
+            Rule::List { .. } => Scope::Full,
         }
     }
 }

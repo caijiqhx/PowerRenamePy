@@ -34,6 +34,9 @@ enum RuleForm {
         replace: String,
         scope: usize,
     },
+    List {
+        mapping: std::collections::HashMap<String, String>,
+    },
 }
 
 impl RuleForm {
@@ -46,6 +49,7 @@ impl RuleForm {
             RuleForm::Regex { pattern, replace, .. } => {
                 format!("正则 [{pattern}] → [{replace}]")
             }
+            RuleForm::List { mapping } => format!("清单 [{} 条映射]", mapping.len()),
         }
     }
 
@@ -69,18 +73,23 @@ impl RuleForm {
                 replace: replace.clone(),
                 scope,
             },
+            RuleForm::List { mapping } => power_rename::rules::Rule::List {
+                mapping: mapping.clone(),
+            },
         }
     }
 
     fn scope(&self) -> usize {
         match self {
             RuleForm::Replace { scope, .. } | RuleForm::Regex { scope, .. } => *scope,
+            RuleForm::List { .. } => 0,
         }
     }
 
     fn set_scope(&mut self, s: usize) {
         match self {
             RuleForm::Replace { scope, .. } | RuleForm::Regex { scope, .. } => *scope = s,
+            RuleForm::List { .. } => {}
         }
     }
 }
@@ -255,6 +264,74 @@ impl RenameApp {
         }
         self.reload();
     }
+
+    fn export_list(&mut self) {
+        // 收集当前可改名条目（树中 renameable 节点）
+        let mut entries = Vec::new();
+        if let Some(tree) = &self.tree {
+            let mut nodes = Vec::new();
+            flatten_tree(tree, &mut nodes);
+            for n in &nodes {
+                if n.renameable {
+                    entries.push(power_rename::fs_tree::FileEntry {
+                        path: n.path.clone(),
+                        name: n.name.clone(),
+                        is_dir: n.is_dir,
+                    });
+                }
+            }
+        }
+        if entries.is_empty() {
+            self.status_msg = "没有可导出的条目（先加载目录）".to_string();
+            return;
+        }
+        let rules: Vec<power_rename::rules::Rule> = self.rules.iter().map(|r| r.to_rule()).collect();
+        let text = power_rename::list_io::build_export_text(&entries, &rules);
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("CSV", &["csv"])
+            .set_file_name("rename_list.csv")
+            .save_file()
+        else {
+            return;
+        };
+        // UTF-8 BOM，Excel 中文不乱码
+        let mut data = vec![0xEF, 0xBB, 0xBF];
+        data.extend_from_slice(text.as_bytes());
+        match std::fs::write(&path, &data) {
+            Ok(()) => self.status_msg = format!("已导出 {} 条到 {}", entries.len(), path.display()),
+            Err(e) => self.status_msg = format!("导出失败：{e}"),
+        }
+    }
+
+    fn import_list(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("文本/CSV", &["csv", "txt"])
+            .pick_file()
+        else {
+            return;
+        };
+        let raw = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.status_msg = format!("读取失败：{e}");
+                return;
+            }
+        };
+        // 编码探测：UTF-8 BOM → UTF-8；否则尝试 UTF-8，失败回退 GBK（Windows 常见）
+        let text = decode_text(&raw);
+        let mapping = power_rename::list_io::parse_rename_list(&text);
+        if mapping.is_empty() {
+            self.status_msg = "清单为空或格式无法识别".to_string();
+            return;
+        }
+        // 追加一条清单规则（已有则替换最新一条）
+        self.rules.push(RuleForm::List {
+            mapping: mapping.clone(),
+        });
+        self.selected_rule = Some(self.rules.len() - 1);
+        self.status_msg = format!("已导入 {} 条映射", mapping.len());
+        self.reload();
+    }
 }
 
 impl eframe::App for RenameApp {
@@ -275,6 +352,13 @@ impl eframe::App for RenameApp {
                         self.dir_input = dir.to_string_lossy().into_owned();
                         self.reload();
                     }
+                }
+                ui.separator();
+                if ui.button("导出清单").clicked() {
+                    self.export_list();
+                }
+                if ui.button("导入清单").clicked() {
+                    self.import_list();
                 }
             });
             ui.horizontal(|ui| {
@@ -387,20 +471,26 @@ impl eframe::App for RenameApp {
                                 changed |= ui.text_edit_singleline(replace).changed();
                             });
                         }
-                    }
-                    // 作用范围
-                    let scopes = ["完整文件名", "主名（不含扩展名）", "扩展名"];
-                    let mut scope = self.rules[idx].scope();
-                    ui.horizontal(|ui| {
-                        ui.label("作用范围：");
-                        for (si, label) in scopes.iter().enumerate() {
-                            if ui.selectable_label(scope == si, *label).clicked() {
-                                scope = si;
-                                changed = true;
-                            }
+                        RuleForm::List { mapping } => {
+                            ui.label(format!("按清单重命名：{} 条映射（导入自 CSV/文本）", mapping.len()));
+                            ui.label("清单规则按「原始文件名」匹配，命中则采用清单新名。");
                         }
-                    });
-                    self.rules[idx].set_scope(scope);
+                    }
+                    // 作用范围（List 规则不适用）
+                    if !matches!(self.rules[idx], RuleForm::List { .. }) {
+                        let scopes = ["完整文件名", "主名（不含扩展名）", "扩展名"];
+                        let mut scope = self.rules[idx].scope();
+                        ui.horizontal(|ui| {
+                            ui.label("作用范围：");
+                            for (si, label) in scopes.iter().enumerate() {
+                                if ui.selectable_label(scope == si, *label).clicked() {
+                                    scope = si;
+                                    changed = true;
+                                }
+                            }
+                        });
+                        self.rules[idx].set_scope(scope);
+                    }
 
                     // 规则变化 → 实时刷新预览
                     if changed {
@@ -459,4 +549,19 @@ fn main() -> eframe::Result {
         options,
         Box::new(|_cc| Ok(Box::new(RenameApp::new()))),
     )
+}
+
+/// 文本解码：UTF-8 BOM / UTF-8 优先，失败回退 GBK（Windows 常见中文编码）。
+fn decode_text(raw: &[u8]) -> String {
+    if raw.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        return String::from_utf8_lossy(&raw[3..]).into_owned();
+    }
+    match std::str::from_utf8(raw) {
+        Ok(s) => s.to_string(),
+        Err(_) => {
+            // GBK 回退（encoding_rs 标准库）
+            let (text, _, _) = encoding_rs::GBK.decode(raw);
+            text.into_owned()
+        }
+    }
 }
