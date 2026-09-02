@@ -536,7 +536,7 @@ impl eframe::App for RenameApp {
             });
         });
 
-        egui::SidePanel::left("rules").resizable(true).default_width(240.0).frame(panel_frame()).show(ctx, |ui| {
+        egui::SidePanel::left("rules").resizable(true).default_width(300.0).frame(panel_frame()).show(ctx, |ui| {
             // 添加规则：单个下拉菜单收拢全部 9 种规则（不再占三行按钮）
             ui.horizontal_wrapped(|ui| {
                 ui.menu_button("+ 添加规则", |ui| {
