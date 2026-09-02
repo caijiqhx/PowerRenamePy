@@ -214,6 +214,8 @@ struct RenameApp {
     preview_by_path: std::collections::HashMap<std::path::PathBuf, PreviewRow>,
     /// 预览树中「已展开」的目录路径
     expanded: std::collections::HashSet<std::path::PathBuf>,
+    /// 预览中当前点击选中的行（path；None = 未选中）
+    selected_preview: Option<std::path::PathBuf>,
     /// 清单映射查看窗口（存规则序号，None=关闭）
     mapping_view: Option<usize>,
     status_msg: String,
@@ -250,6 +252,7 @@ impl RenameApp {
             tree: None,
             preview_by_path: std::collections::HashMap::new(),
             expanded: std::collections::HashSet::new(),
+            selected_preview: None,
             mapping_view: None,
             status_msg: String::new(),
             undo: UndoManager::new(),
@@ -812,6 +815,8 @@ impl eframe::App for RenameApp {
                             .min_scrolled_height(300.0)
                             .striped(true)
                             .resizable(true)
+                            // 行级点击感应：让整行可点击（hover 整行高亮 + 单击选中持久）
+                            .sense(egui::Sense::click())
                             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                             // 四列全部可拖拽调宽：resizable(true) 启用拖拽，
                             // clip(true) 允许缩窄到内容宽度以下（否则长文件名会撑住最小宽）。
@@ -841,7 +846,7 @@ impl eframe::App for RenameApp {
                             })
                             .body(|mut body| {
                                 // 根目录恒可见（且默认展开）；子节点仅当其父目录展开时才渲染
-                                render_tree_rows(&mut body, tree, &self.preview_by_path, &mut self.expanded, &mut action, true, true, 0);
+                                render_tree_rows(&mut body, tree, &self.preview_by_path, &mut self.expanded, &mut action, &mut self.selected_preview, true, true, 0);
                                 if tree.children.is_empty() {
                                     body.row(26.0, |mut row| {
                                         row.col(|ui| {
@@ -975,6 +980,7 @@ fn render_tree_rows(
     by_path: &std::collections::HashMap<std::path::PathBuf, PreviewRow>,
     expanded: &mut std::collections::HashSet<std::path::PathBuf>,
     action: &mut PreviewAction,
+    selected_preview: &mut Option<std::path::PathBuf>,
     visible: bool,
     default_open: bool,
     depth: usize,
@@ -1015,6 +1021,10 @@ fn render_tree_rows(
             }
         };
         body.row(26.0, |mut row| {
+            // 整行高亮（官方通道）：hover 由 egui_extras 自动整行渲染（延迟一帧）；
+            // 选中用 set_selected 画整行 selection 背景（在文字之下、跨 cell 无缝）
+            let is_selected = selected_preview.as_ref() == Some(&node.path);
+            row.set_selected(is_selected);
             row.col(|ui| {
                 ui.horizontal(|ui| {
                     ui.add_space(depth as f32 * 16.0);
@@ -1058,10 +1068,12 @@ fn render_tree_rows(
                             expanded.remove(&node.path);
                         }
                     }
-                    // 目录名：单击无动作（不折叠），双击打开文件夹。
-                    // 表格行高固定 22px：临时压小 label 的按钮内边距，避免高亮矩形超出行高被裁
-                    ui.spacing_mut().button_padding = egui::vec2(4.0, 1.0);
-                    let resp = ui.selectable_label(false, &node.name);
+                    // 目录名：单击选中该行（持久高亮），双击打开文件夹。
+                    // 用带点击感应的 label（不再自绘局部高亮矩形，整行高亮由 set_selected 负责）
+                    let resp = ui.add(egui::Label::new(&node.name).sense(egui::Sense::click()));
+                    if resp.clicked() {
+                        *selected_preview = Some(node.path.clone());
+                    }
                     if resp.double_clicked() {
                         *action = PreviewAction::Open(node.path.clone());
                     }
@@ -1088,7 +1100,7 @@ fn render_tree_rows(
         });
         if is_open {
             for child in &node.children {
-                render_tree_rows(body, child, by_path, expanded, action, true, false, depth + 1);
+                render_tree_rows(body, child, by_path, expanded, action, selected_preview, true, false, depth + 1);
             }
         }
         return;
@@ -1123,13 +1135,19 @@ fn render_tree_rows(
         }
     };
     body.row(26.0, |mut row| {
+        // 整行高亮：选中背景（官方通道，跨 cell 无缝、在文字之下）
+        let is_selected = selected_preview.as_ref() == Some(&node.path);
+        row.set_selected(is_selected);
         row.col(|ui| {
             ui.horizontal(|ui| {
                 ui.add_space(depth as f32 * 16.0);
-                // 与目录行一致用 selectable_label：hover 时背景变色；RichText 保留状态颜色。
-                // 表格行高固定 22px：压小按钮内边距，避免高亮矩形超出行高被裁
-                ui.spacing_mut().button_padding = egui::vec2(4.0, 1.0);
-                let label = ui.selectable_label(false, egui::RichText::new(&node.name).color(color));
+                // 带点击感应的 label：单击选中该行（持久），双击打开所在文件夹并定位；
+                // 整行 hover/选中高亮由官方通道负责，label 不再自绘局部矩形
+                let label = ui.add(egui::Label::new(egui::RichText::new(&node.name).color(color)).sense(egui::Sense::click()));
+                // 左键单击：选中该行（持久高亮）
+                if label.clicked() {
+                    *selected_preview = Some(node.path.clone());
+                }
                 // 左键双击：打开所在文件夹并定位文件
                 if label.double_clicked() {
                     *action = PreviewAction::Reveal(node.path.clone());
