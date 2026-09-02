@@ -974,6 +974,35 @@ fn render_tree_rows(
 
     if node.is_dir {
         let is_open = expanded.contains(&node.path) || default_open;
+        // 目录行的新名/状态/说明：勾选「包含文件夹」且目录可改名时，
+        // preview_by_path 中会有该目录的预览结果，此时后三列与文件行一致显示；
+        // 未命中（根目录、未勾选包含文件夹）则留空，保持树形结构展示。
+        let dir_preview = by_path.get(&node.path);
+        let is_dir_skipped = dir_preview.is_none();
+        let (dir_new_name, dir_status, dir_note) = match dir_preview {
+            Some(r) => (r.new_name.clone(), r.status, r.note.clone()),
+            None => (String::new(), PreviewStatus::Unchanged, String::new()),
+        };
+        let dir_color = if is_dir_skipped {
+            egui::Color32::from_rgb(0xA0, 0xA0, 0xA0) // 跳过（未参与改名）→ 浅灰
+        } else {
+            match dir_status {
+                PreviewStatus::Ok => egui::Color32::from_rgb(0x2e, 0x8b, 0x57),
+                PreviewStatus::Conflict => egui::Color32::from_rgb(0xc0, 0x39, 0x2b),
+                PreviewStatus::Error => egui::Color32::from_rgb(0x8b, 0x00, 0x00),
+                PreviewStatus::Unchanged => egui::Color32::GRAY,
+            }
+        };
+        let dir_status_label = if is_dir_skipped {
+            "跳过"
+        } else {
+            match dir_status {
+                PreviewStatus::Ok => "就绪",
+                PreviewStatus::Unchanged => "无变化",
+                PreviewStatus::Conflict => "冲突",
+                PreviewStatus::Error => "错误",
+            }
+        };
         body.row(22.0, |mut row| {
             row.col(|ui| {
                 ui.horizontal(|ui| {
@@ -983,7 +1012,7 @@ fn render_tree_rows(
                     // 三角响应单击：折叠/展开切到这个三角上，目录名双击不再有折叠副作用
                     let (tri_rect, tri_resp) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::click());
                     let painter = ui.painter();
-                    let color = ui.visuals().text_color();
+                    let tri_color = ui.visuals().text_color();
                     let c = tri_rect.center();
                     let s = 3.5;
                     let tri: Vec<egui::Pos2> = if is_open {
@@ -1001,7 +1030,7 @@ fn render_tree_rows(
                             egui::pos2(c.x + s, c.y),
                         ]
                     };
-                    painter.add(egui::Shape::convex_polygon(tri, color, egui::Stroke::NONE));
+                    painter.add(egui::Shape::convex_polygon(tri, tri_color, egui::Stroke::NONE));
                     if tri_resp.clicked() {
                         let next = !is_open;
                         if next {
@@ -1017,9 +1046,24 @@ fn render_tree_rows(
                     }
                 });
             });
-            row.col(|_ui| {});
-            row.col(|_ui| {});
-            row.col(|_ui| {});
+            row.col(|ui| {
+                // 目录新名称（参与改名时显示）
+                if !is_dir_skipped {
+                    ui.colored_label(dir_color, dir_new_name);
+                }
+            });
+            row.col(|ui| {
+                // 目录状态
+                if !is_dir_skipped {
+                    ui.label(dir_status_label);
+                }
+            });
+            row.col(|ui| {
+                // 目录说明
+                if !is_dir_skipped && !dir_note.is_empty() {
+                    ui.label(dir_note);
+                }
+            });
         });
         if is_open {
             for child in &node.children {
