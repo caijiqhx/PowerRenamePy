@@ -538,10 +538,10 @@ impl eframe::App for RenameApp {
             });
         });
 
-        egui::SidePanel::left("rules").resizable(true).default_width(320.0).frame(panel_frame()).show(ctx, |ui| {
+        egui::SidePanel::left("rules").resizable(true).default_width(240.0).frame(panel_frame()).show(ctx, |ui| {
             ui.heading("规则");
             // 添加规则：单个下拉菜单收拢全部 9 种规则（不再占三行按钮）
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.menu_button("+ 添加规则", |ui| {
                     if ui.button("查找替换").clicked() {
                         self.push_form(RuleForm::Replace {
@@ -606,7 +606,9 @@ impl eframe::App for RenameApp {
                         ui.close_menu();
                     }
                 });
-                // 管理按钮独立一行右侧（删除/排序/清空）
+            });
+            // 管理按钮独立一行（删除/排序/清空），窄面板下自动换行
+            ui.horizontal_wrapped(|ui| {
                 if ui.button("删除").clicked() {
                     if let Some(idx) = self.selected_rule {
                         if idx < self.rules.len() {
@@ -685,8 +687,8 @@ impl eframe::App for RenameApp {
                             });
                         }
                         RuleForm::Case { mode, .. } => {
-                            ui.horizontal(|ui| {
-                                ui.label("转换方式：");
+                            ui.label("转换方式：");
+                            ui.horizontal_wrapped(|ui| {
                                 for (mi, label) in ["小写", "大写", "首字母大写", "仅首字符大写"].iter().enumerate() {
                                     if ui.selectable_label(*mode == mi, *label).clicked() {
                                         *mode = mi;
@@ -708,8 +710,8 @@ impl eframe::App for RenameApp {
                             });
                         }
                         RuleForm::Number { pos, start, step, digits, sep } => {
-                            ui.horizontal(|ui| {
-                                ui.label("位置：");
+                            ui.label("位置：");
+                            ui.horizontal_wrapped(|ui| {
                                 for (pi, label) in ["前缀", "后缀"].iter().enumerate() {
                                     if ui.selectable_label(*pos == pi, *label).clicked() {
                                         *pos = pi;
@@ -717,13 +719,13 @@ impl eframe::App for RenameApp {
                                     }
                                 }
                             });
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 ui.label("起始值：");
                                 changed |= ui.text_edit_singleline(start).changed();
                                 ui.label("步长：");
                                 changed |= ui.text_edit_singleline(step).changed();
                             });
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 ui.label("位数：");
                                 changed |= ui.text_edit_singleline(digits).changed();
                                 ui.label("分隔符：");
@@ -761,8 +763,8 @@ impl eframe::App for RenameApp {
                     {
                         let scopes = ["完整文件名", "主名（不含扩展名）", "扩展名"];
                         let mut scope = self.rules[idx].scope();
-                        ui.horizontal(|ui| {
-                            ui.label("作用范围：");
+                        ui.label("作用范围：");
+                        ui.horizontal_wrapped(|ui| {
                             for (si, label) in scopes.iter().enumerate() {
                                 if ui.selectable_label(scope == si, *label).clicked() {
                                     scope = si;
