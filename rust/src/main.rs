@@ -184,15 +184,15 @@ struct PreviewRow {
     note: String,
 }
 
-/// 预览区右键菜单待执行动作（渲染时收集，面板结束后统一处理）。
+/// 预览区待执行动作（渲染时收集，面板结束后统一执行）。
 #[derive(Debug)]
 enum PreviewAction {
     None,
-    /// 打开文件夹
+    /// 双击目录名：打开文件夹
     Open(std::path::PathBuf),
-    /// 打开所在文件夹（资源管理器定位文件）
+    /// 双击文件名：打开所在文件夹并定位文件
     Reveal(std::path::PathBuf),
-    /// 刷新预览
+    /// 表头右键：刷新预览
     Refresh,
 }
 
@@ -952,9 +952,12 @@ impl eframe::App for RenameApp {
 
 /// 递归把树渲染进表格 body。
 ///
-/// 目录行：第一列显示缩进 + painter 绘制的折叠三角 + 名字（点击切换展开）；
-/// 文件行：显示原名/新名/状态/说明。目录行本身不在预览映射中，后三列留空。
-/// 右键行：目录 → 打开文件夹；文件 → 打开所在文件夹；空白/表头 → 刷新预览。
+/// 目录行：第一列显示缩进 + painter 绘制的折叠三角 + 名字；
+/// - 单击折叠三角 → 切换展开/折叠（三角与名字职责分离，避免双击目录名时
+///   第一击先触发折叠、缩起整棵子树再弹资源管理器）；
+/// - 双击目录名 → 打开文件夹。
+/// 文件行：双击 → 打开所在文件夹并定位文件。
+/// 表头右键 → 刷新预览。
 fn render_tree_rows(
     body: &mut egui_extras::TableBody,
     node: &power_rename::fs_tree::TreeNode,
@@ -977,7 +980,8 @@ fn render_tree_rows(
                     ui.add_space(depth as f32 * 16.0);
                     // 折叠三角用 painter 直接绘制（▸/▾ 等字符在中文系统字体中
                     // 无字形会显示成问号；画出来的三角跨平台字体无关、永不出问号）
-                    let (tri_rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                    // 三角响应单击：折叠/展开切到这个三角上，目录名双击不再有折叠副作用
+                    let (tri_rect, tri_resp) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::click());
                     let painter = ui.painter();
                     let color = ui.visuals().text_color();
                     let c = tri_rect.center();
@@ -998,16 +1002,17 @@ fn render_tree_rows(
                         ]
                     };
                     painter.add(egui::Shape::convex_polygon(tri, color, egui::Stroke::NONE));
-                    // 目录行用 selectable_label(false) 保留点击态但无「选中」高亮
-                    let resp = ui.selectable_label(false, &node.name);
-                    if resp.clicked() {
+                    if tri_resp.clicked() {
                         let next = !is_open;
                         if next {
                             expanded.insert(node.path.clone());
                         } else {
                             expanded.remove(&node.path);
                         }
-                    } else if resp.secondary_clicked() {
+                    }
+                    // 目录名：单击无动作（不折叠），双击打开文件夹
+                    let resp = ui.selectable_label(false, &node.name);
+                    if resp.double_clicked() {
                         *action = PreviewAction::Open(node.path.clone());
                     }
                 });
@@ -1057,7 +1062,8 @@ fn render_tree_rows(
             ui.horizontal(|ui| {
                 ui.add_space(depth as f32 * 16.0);
                 let label = ui.colored_label(color, &node.name);
-                if label.secondary_clicked() {
+                // 左键双击：打开所在文件夹并定位文件
+                if label.double_clicked() {
                     *action = PreviewAction::Reveal(node.path.clone());
                 }
             });
