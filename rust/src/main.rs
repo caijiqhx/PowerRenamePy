@@ -754,46 +754,53 @@ impl eframe::App for RenameApp {
             ui.heading("预览");
             if let Some(tree) = &self.tree {
                 // 多列表格：当前名称（树形缩进）/ 新名称 / 状态 / 说明
+                // 包一层双向滚动区：列总宽超过面板宽度时可左右滚动
                 use egui_extras::{Column, TableBuilder};
-                TableBuilder::new(ui)
-                    .striped(true)
-                    .resizable(true)
-                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                    .column(Column::initial(300.0).at_least(160.0).resizable(true)) // 当前名称
-                    .column(Column::initial(260.0).at_least(140.0).resizable(true)) // 新名称
-                    .column(Column::initial(70.0).at_least(50.0))                    // 状态
-                    .column(Column::remainder().at_least(120.0))                     // 说明
-                    .header(22.0, |mut header| {
-                        header.col(|ui| {
-                            ui.strong("当前名称（结构）");
-                        });
-                        header.col(|ui| {
-                            ui.strong("新名称");
-                        });
-                        header.col(|ui| {
-                            ui.strong("状态");
-                        });
-                        header.col(|ui| {
-                            ui.strong("说明");
-                            // 表头右键：刷新预览
-                            if ui.response().secondary_clicked() {
-                                action = PreviewAction::Refresh;
-                            }
-                        });
-                    })
-                    .body(|mut body| {
-                        // 根目录恒可见（且默认展开）；子节点仅当其父目录展开时才渲染
-                        render_tree_rows(&mut body, tree, &self.preview_by_path, &mut self.expanded, &mut action, true, true, 0);
-                        if tree.children.is_empty() {
-                            body.row(22.0, |mut row| {
-                                row.col(|ui| {
-                                    ui.label("（空目录）");
+                egui::ScrollArea::both()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        TableBuilder::new(ui)
+                            // 列宽可拉伸，min_scrolled_width 保证滚动区有最小内容宽
+                            .min_scrolled_height(300.0)
+                            .striped(true)
+                            .resizable(true)
+                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                            .column(Column::initial(300.0).at_least(160.0).resizable(true)) // 当前名称
+                            .column(Column::initial(260.0).at_least(140.0).resizable(true)) // 新名称
+                            .column(Column::initial(70.0).at_least(50.0))                    // 状态
+                            .column(Column::remainder().at_least(120.0))                     // 说明
+                            .header(22.0, |mut header| {
+                                header.col(|ui| {
+                                    ui.strong("当前名称（结构）");
                                 });
-                                row.col(|_ui| {});
-                                row.col(|_ui| {});
-                                row.col(|_ui| {});
+                                header.col(|ui| {
+                                    ui.strong("新名称");
+                                });
+                                header.col(|ui| {
+                                    ui.strong("状态");
+                                });
+                                header.col(|ui| {
+                                    ui.strong("说明");
+                                    // 表头右键：刷新预览
+                                    if ui.response().secondary_clicked() {
+                                        action = PreviewAction::Refresh;
+                                    }
+                                });
+                            })
+                            .body(|mut body| {
+                                // 根目录恒可见（且默认展开）；子节点仅当其父目录展开时才渲染
+                                render_tree_rows(&mut body, tree, &self.preview_by_path, &mut self.expanded, &mut action, true, true, 0);
+                                if tree.children.is_empty() {
+                                    body.row(22.0, |mut row| {
+                                        row.col(|ui| {
+                                            ui.label("（空目录）");
+                                        });
+                                        row.col(|_ui| {});
+                                        row.col(|_ui| {});
+                                        row.col(|_ui| {});
+                                    });
+                                }
                             });
-                        }
                     });
             } else {
                 ui.label("（未加载目录）");
