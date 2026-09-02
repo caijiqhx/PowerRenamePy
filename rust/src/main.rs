@@ -1053,7 +1053,9 @@ fn render_tree_rows(
                             expanded.remove(&node.path);
                         }
                     }
-                    // 目录名：单击无动作（不折叠），双击打开文件夹
+                    // 目录名：单击无动作（不折叠），双击打开文件夹。
+                    // 表格行高固定 22px：临时压小 label 的按钮内边距，避免高亮矩形超出行高被裁
+                    ui.spacing_mut().button_padding = egui::vec2(4.0, 1.0);
                     let resp = ui.selectable_label(false, &node.name);
                     if resp.double_clicked() {
                         *action = PreviewAction::Open(node.path.clone());
@@ -1119,7 +1121,9 @@ fn render_tree_rows(
         row.col(|ui| {
             ui.horizontal(|ui| {
                 ui.add_space(depth as f32 * 16.0);
-                // 与目录行一致用 selectable_label：hover 时背景变色；RichText 保留状态颜色
+                // 与目录行一致用 selectable_label：hover 时背景变色；RichText 保留状态颜色。
+                // 表格行高固定 22px：压小按钮内边距，避免高亮矩形超出行高被裁
+                ui.spacing_mut().button_padding = egui::vec2(4.0, 1.0);
                 let label = ui.selectable_label(false, egui::RichText::new(&node.name).color(color));
                 // 左键双击：打开所在文件夹并定位文件
                 if label.double_clicked() {
@@ -1172,16 +1176,16 @@ fn main() -> eframe::Result {
 fn install_light_theme(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::light();
 
-    // 背景统一浅灰（面板/窗口/表格行都别纯白，避免刺眼）
-    let bg = egui::Color32::from_rgb(0xF2, 0xF3, 0xF5);
-    let bg_alt = egui::Color32::from_rgb(0xE8, 0xEA, 0xED); // 表格交替行
+    // 背景统一浅灰（面板/窗口/表格行都别纯白避免刺眼）；比之前再灰一档
+    let bg = egui::Color32::from_rgb(0xE5, 0xE6, 0xE9);
+    let bg_alt = egui::Color32::from_rgb(0xD9, 0xDB, 0xDF); // 表格交替行
     visuals.panel_fill = bg;
     visuals.window_fill = bg;
     visuals.extreme_bg_color = bg_alt;
     visuals.faint_bg_color = bg_alt; // TableBuilder striped 行
 
     // 控件边框 + 圆角，让按钮/输入框有轮廓
-    let border = egui::Color32::from_rgb(0xC8, 0xCB, 0xCF);
+    let border = egui::Color32::from_rgb(0xC2, 0xC6, 0xCA);
     let accent = egui::Color32::from_rgb(0x2F, 0x6F, 0xD5); // 蓝色强调
 
     for w in [
@@ -1192,15 +1196,20 @@ fn install_light_theme(ctx: &egui::Context) {
         w.bg_stroke = egui::Stroke::new(1.0, border);
         w.corner_radius = egui::CornerRadius::same(4);
     }
-    // 按钮/控件：白底 + 边框；悬停轻微变蓝、按下蓝色边框
-    visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(0xFF, 0xFF, 0xFF);
-    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, accent);
-    visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(0xE8, 0xF0, 0xFB);
+    // 按钮/控件：常态浅蓝底（区别于输入框白底），悬停加深、按下更深，突出可点击
+    visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(0xE9, 0xEF, 0xFA);
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.2, accent);
+    visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(0xD7, 0xE3, 0xF8);
     visuals.widgets.active.bg_stroke = egui::Stroke::new(1.5, accent);
-    visuals.widgets.active.bg_fill = egui::Color32::from_rgb(0xD6, 0xE4, 0xF7);
+    visuals.widgets.active.bg_fill = egui::Color32::from_rgb(0xC3, 0xD6, 0xF2);
 
     // 选中项背景
-    visuals.selection.bg_fill = egui::Color32::from_rgb(0xCF, 0xE0, 0xF8);
+    visuals.selection.bg_fill = egui::Color32::from_rgb(0xCB, 0xDD, 0xF5);
+
+    // 按钮稍微加大：只调内边距（字号不变，文本仍按原字号渲染）
+    ctx.style_mut(|style| {
+        style.spacing.button_padding = egui::vec2(8.0, 3.0);
+    });
 
     ctx.set_visuals(visuals);
 }
@@ -1208,8 +1217,8 @@ fn install_light_theme(ctx: &egui::Context) {
 /// 面板统一样式：接缝处微灰（与背景一致），内边距让内容不贴边。
 fn panel_frame() -> egui::Frame {
     egui::Frame::new()
-        .fill(egui::Color32::from_rgb(0xF2, 0xF3, 0xF5))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0xD0, 0xD3, 0xD7)))
+        .fill(egui::Color32::from_rgb(0xE5, 0xE6, 0xE9))
+        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0xCC, 0xCF, 0xD3)))
         .inner_margin(egui::Margin::same(8))
         .corner_radius(egui::CornerRadius::same(0))
 }
