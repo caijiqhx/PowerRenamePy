@@ -1105,7 +1105,8 @@ fn render_tree_rows(
         row.col(|ui| {
             ui.horizontal(|ui| {
                 ui.add_space(depth as f32 * 16.0);
-                let label = ui.colored_label(color, &node.name);
+                // 与目录行一致用 selectable_label：hover 时背景变色；RichText 保留状态颜色
+                let label = ui.selectable_label(false, egui::RichText::new(&node.name).color(color));
                 // 左键双击：打开所在文件夹并定位文件
                 if label.double_clicked() {
                     *action = PreviewAction::Reveal(node.path.clone());
