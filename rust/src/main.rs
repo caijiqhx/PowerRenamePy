@@ -217,10 +217,17 @@ struct RenameApp {
     mapping_view: Option<usize>,
     status_msg: String,
     undo: UndoManager,
+    /// 截图钩子（仅供验收）：PR_CAPTURE 指向输出路径时，启动后自截图一帧 BMP 并退出
+    capture_path: Option<PathBuf>,
+    capture_sent: bool,
 }
 
 impl RenameApp {
     fn new() -> Self {
+        // 截图钩子：PR_CAPTURE=<路径> 时启动后自截图一帧 BMP 并退出（仅供验收，不影响正常使用）
+        let capture_path = std::env::var_os("PR_CAPTURE")
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from);
         Self {
             dir_input: String::new(),
             recursive: true,
@@ -237,6 +244,8 @@ impl RenameApp {
             mapping_view: None,
             status_msg: String::new(),
             undo: UndoManager::new(),
+            capture_path,
+            capture_sent: false,
         }
     }
 
@@ -858,6 +867,51 @@ impl eframe::App for RenameApp {
             PreviewAction::Refresh => self.reload(),
             PreviewAction::None => {}
         }
+
+        // 截图钩子（仅供验收）：PR_CAPTURE 指定路径时，请求 egui 自截图一帧并保存
+        if let Some(out) = self.capture_path.clone() {
+            if !self.capture_sent {
+                self.capture_sent = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+            }
+            if let Some(image) = ctx.input(|i| i.events.iter().find_map(|e| match e {
+                egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                _ => None,
+            })) {
+                // 写 BMP（低依赖：手写 24-bit 位图，仅 R/G/B）
+                let w = image.size[0] as u32;
+                let h = image.size[1] as u32;
+                let row_bytes = (w * 3 + 3) & !3;
+                let mut bmp = Vec::with_capacity(54 + (row_bytes * h) as usize);
+                let file_size = 54 + row_bytes * h;
+                bmp.extend_from_slice(b"BM");
+                bmp.extend_from_slice(&file_size.to_le_bytes());
+                bmp.extend_from_slice(&[0u8; 4]);          // reserved
+                bmp.extend_from_slice(&54u32.to_le_bytes()); // pixel_data_offset
+                bmp.extend_from_slice(&40u32.to_le_bytes()); // biSize
+                bmp.extend_from_slice(&w.to_le_bytes());
+                bmp.extend_from_slice(&h.to_le_bytes());
+                bmp.extend_from_slice(&[1, 0]);            // planes=1
+                bmp.extend_from_slice(&[24, 0]);           // bpp=24
+                bmp.extend_from_slice(&[0u8; 24]);         // compression 0 + 其余为 0
+                for y in 0..h {
+                    let row_start = (h - 1 - y) as usize * w as usize; // bottom-up
+                    for x in 0..w {
+                        let p = image.pixels[row_start + x as usize];
+                        bmp.push(p.b()); // BMP 是 BGR
+                        bmp.push(p.g());
+                        bmp.push(p.r());
+                    }
+                    // 行对齐到 4 字节
+                    let pad = row_bytes - w * 3;
+                    bmp.extend(std::iter::repeat(0u8).take(pad as usize));
+                }
+                if let Err(e) = std::fs::write(&out, &bmp) {
+                    eprintln!("[PowerRename] 截图保存失败 {out:?}: {e}");
+                }
+                std::process::exit(0);
+            }
+        }
     }
 }
 
@@ -968,6 +1022,10 @@ fn render_tree_rows(
 }
 
 fn main() -> eframe::Result {
+    // 支持命令行参数：power_rename.exe <路径> 启动时直接加载该目录（args_os 保留中文路径）
+    let initial_dir = std::env::args_os().nth(1) // 第 1 个参数（第 0 个是程序自身）
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string_lossy().into_owned());
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1000.0, 700.0]).with_title("PowerRename Py — 批量重命名工具 (Rust)"),
         ..Default::default()
@@ -975,10 +1033,15 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "PowerRenamePy Rust",
         options,
-        Box::new(|cc| {
+        Box::new(move |cc| {
             install_chinese_font(&cc.egui_ctx);
             install_light_theme(&cc.egui_ctx);
-            Ok(Box::new(RenameApp::new()))
+            let mut app = RenameApp::new();
+            if let Some(dir) = initial_dir.as_ref() {
+                app.dir_input = dir.clone();
+                app.reload();
+            }
+            Ok(Box::new(app))
         }),
     )
 }
