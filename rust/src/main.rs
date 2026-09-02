@@ -1039,11 +1039,15 @@ fn panel_frame() -> egui::Frame {
 /// - Windows: msyh(微软雅黑) / simhei(黑体) / simsun(宋体)
 /// - macOS:   PingFang / Hiragino Sans GB / STHeiti
 /// - Linux:   Noto Sans CJK / WenQuanYi / Droid Sans Fallback
-/// 全部找不到时保留 egui 自带字体（英文界面仍可用，中文暂时缺字形）。
+///
+/// 注意：项目已关闭 egui 的 default_fonts feature（编译期不再嵌入 4 个内置字体
+/// 以压缩体积），因此这里必须成功加载至少一种字体，否则界面完全无字形。
+/// 中文字体（微软雅黑/苹方/Noto CJK）自带完整拉丁字形，可同时覆盖英文；
+/// 若中途找不到，退而加载系统英文字体兜底，保证英文界面可用。
 fn install_chinese_font(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
 
-    // 按当前平台挑选候选字体文件（按优先级）
+    // 各平台候选字体（按优先级）：先中文字体（含拉丁字形），后英文字体兜底
     let (win, mac, linux): (&[&str], &[&str], &[&str]) = (
         &[
             "C:/Windows/Fonts/msyh.ttc",
@@ -1051,6 +1055,8 @@ fn install_chinese_font(ctx: &egui::Context) {
             "C:/Windows/Fonts/simhei.ttf",
             "C:/Windows/Fonts/simsun.ttc",
             "C:/Windows/Fonts/simkai.ttf",
+            "C:/Windows/Fonts/segoeui.ttf", // 英文兜底
+            "C:/Windows/Fonts/arial.ttf",
         ],
         &[
             "/System/Library/Fonts/PingFang.ttc",           // 苹方
@@ -1058,16 +1064,18 @@ fn install_chinese_font(ctx: &egui::Context) {
             "/Library/Fonts/Arial Unicode.ttf",
             "/System/Library/Fonts/STHeiti Light.ttc",
             "/System/Library/Fonts/STHeiti Medium.ttc",
+            "/System/Library/Fonts/Helvetica.ttc",          // 英文兜底
         ],
         &[
             "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
             "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
             "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
             "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", // 英文兜底
         ],
     );
 
-    // 当前平台: cargo 编译目标 tripe 决定，运行时用 cfg!(target_os)
+    // 当前平台：运行时用 cfg!(target_os) 决定
     let candidates: &[&str] = if cfg!(target_os = "windows") {
         win
     } else if cfg!(target_os = "macos") {
@@ -1076,33 +1084,36 @@ fn install_chinese_font(ctx: &egui::Context) {
         linux
     };
 
+    // 找到的第一个可用字体作为主字体（优先中文；中文缺失时英文兜底）
     let mut installed = false;
     for path in candidates {
         if let Ok(bytes) = std::fs::read(path) {
             let font_data = egui::FontData::from_owned(bytes);
             // 注意：不再加 y_offset_factor（那会让按钮文字整体偏上，
             // 导致“按钮文字没居中”感）。中文与英文基线差异交给字形自身。
-            fonts.font_data.insert("chinese".to_owned(), font_data.into());
+            fonts.font_data.insert("main".to_owned(), font_data.into());
             installed = true;
             break;
         }
     }
+
+    // 主字体缺失：这里必须显式返回并 popup 提示，否则界面无字形
     if !installed {
-        // 全部找不到：保留 egui 默认字体（英文可用），不强行加载
+        eprintln!("[PowerRename] 未找到任何系统字体，界面将无法正常显示文本");
         return;
     }
 
-    // 把中文字体放进比例字体族的最高优先级（fallback 顺序：中文 → Ubuntu-Light 等）
+    // 主字体同时作为比例/等宽字体的首个 fallback（英文由中文文档字体覆盖）
     fonts
         .families
         .entry(egui::FontFamily::Proportional)
         .or_default()
-        .insert(0, "chinese".to_owned());
+        .insert(0, "main".to_owned());
     fonts
         .families
         .entry(egui::FontFamily::Monospace)
         .or_default()
-        .push("chinese".to_owned());
+        .insert(0, "main".to_owned());
 
     ctx.set_fonts(fonts);
 }
