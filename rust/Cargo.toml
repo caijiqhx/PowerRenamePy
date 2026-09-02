@@ -25,6 +25,6 @@ rfd = "0.15"
 [profile.release]
 lto = true
 codegen-units = 1
-strip = true
-opt-level = "s"
+strip = "symbols"
+opt-level = "z"
 panic = "abort"
