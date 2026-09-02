@@ -229,6 +229,13 @@ impl RenameApp {
         let capture_path = std::env::var_os("PR_CAPTURE")
             .filter(|s| !s.is_empty())
             .map(PathBuf::from);
+        // 演示规则（仅供验收截图）：PR_DEMO=1 时注入一组规则，让预览呈现
+        // 正常改名/冲突/无变化三种状态。可在 PR_CAPTURE 截图前设好路径，
+        // 规则启动即就位，等待期间即可看到带新名称和状态高亮的完整预览。
+        let mut rules: Vec<RuleForm> = Vec::new();
+        if std::env::var_os("PR_DEMO").is_some() {
+            rules = Self::demo_rules();
+        }
         Self {
             dir_input: String::new(),
             recursive: true,
@@ -237,7 +244,7 @@ impl RenameApp {
             inc_text: String::new(),
             exc_text: String::new(),
             use_regex: false,
-            rules: Vec::new(),
+            rules,
             selected_rule: None,
             tree: None,
             preview_by_path: std::collections::HashMap::new(),
@@ -387,6 +394,21 @@ impl RenameApp {
     fn push_form(&mut self, form: RuleForm) {
         self.rules.push(form);
         self.selected_rule = Some(self.rules.len() - 1);
+    }
+
+    /// 演示规则集（仅供 PR_DEMO 验收截图）：依次应用会呈现出正常改名、
+    /// 冲突与无变化三种预览状态，便于截图直观展示界面。
+    fn demo_rules() -> Vec<RuleForm> {
+        let mut rules = Vec::new();
+        // 1) 前缀加 2026-：所有文件都会改名（正常状态）
+        rules.push(RuleForm::Prefix { text: "2026-".to_string() });
+        // 2) 正则 .txt → .md：存在冲突/无变化空间
+        rules.push(RuleForm::Regex {
+            pattern: r"\.txt$".to_string(),
+            replace: ".md".to_string(),
+            scope: 0,
+        });
+        rules
     }
 
     fn export_list(&mut self) {
