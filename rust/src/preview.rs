@@ -319,4 +319,159 @@ mod integration_tests {
 
         fs::remove_dir_all(&dir).unwrap();
     }
+
+    /// 构造与 Python golden 相同的目录：
+    /// base/aaa.txt, bbb.txt, ccc.txt
+    /// base/sub/ddd.txt, eee.txt
+    /// base/log/fff.log, ggg.log
+    fn make_cmp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "pr_cmp_rust_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::create_dir_all(dir.join("log")).unwrap();
+        for f in ["aaa.txt", "bbb.txt", "ccc.txt"] {
+            fs::write(dir.join(f), "").unwrap();
+        }
+        for f in ["ddd.txt", "eee.txt"] {
+            fs::write(dir.join("sub").join(f), "").unwrap();
+        }
+        for f in ["fff.log", "ggg.log"] {
+            fs::write(dir.join("log").join(f), "").unwrap();
+        }
+        dir
+    }
+
+/// 加载条目（对齐 Python load_entries recursive+files，不含目录）。
+    fn cmp_entries(dir: &std::path::Path) -> Vec<crate::fs_tree::FileEntry> {
+        crate::fs_tree::load_entries(
+            dir,
+            &crate::fs_tree::LoadOptions {
+                recursive: true,
+                include_files: true,
+                include_dirs: false,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// 按 old_name 断言单条 (new_name, status)。
+    fn assert_cmp(items: &[PreviewItem], old: &str, exp_new: &str, exp_status: PreviewStatus) {
+        let it = items.iter().find(|i| i.old_name == old).expect(old);
+        assert_eq!(it.new_name, exp_new, "new_name for {old}");
+        assert_eq!(it.status, exp_status, "status for {old}");
+    }
+
+    /// Python golden 对照 1：编号(后缀,2位,_) + 前缀（流水线组合）
+    #[test]
+    fn cmp_scene1_number_plus_prefix() {
+        let dir = make_cmp_dir("s1");
+        let entries = cmp_entries(&dir);
+        let rules = [
+            crate::rules::Rule::Number {
+                pos: crate::rules::NumberPos::Suffix,
+                start: 1,
+                step: 1,
+                digits: 2,
+                sep: "_".into(),
+            },
+            crate::rules::Rule::Prefix { text: "NEW_".into() },
+        ];
+        let items = compute_preview(&entries, &rules);
+        assert_cmp(&items, "aaa.txt", "NEW_aaa_01.txt", PreviewStatus::Ok);
+        assert_cmp(&items, "bbb.txt", "NEW_bbb_02.txt", PreviewStatus::Ok);
+        assert_cmp(&items, "ccc.txt", "NEW_ccc_03.txt", PreviewStatus::Ok);
+        assert_cmp(&items, "ddd.txt", "NEW_ddd_04.txt", PreviewStatus::Ok);
+        assert_cmp(&items, "eee.txt", "NEW_eee_05.txt", PreviewStatus::Ok);
+        assert_cmp(&items, "fff.log", "NEW_fff_06.log", PreviewStatus::Ok);
+        assert_cmp(&items, "ggg.log", "NEW_ggg_07.log", PreviewStatus::Ok);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Python golden 对照 2：全目录 .txt → .md（跨目录各自独立，log 目录不变）
+    #[test]
+    fn cmp_scene2_ext_change() {
+        let dir = make_cmp_dir("s2");
+        let entries = cmp_entries(&dir);
+        let rules = [crate::rules::Rule::Replace {
+            search: ".txt".into(),
+            replace: ".md".into(),
+            case_sensitive: false,
+            scope: crate::rules::Scope::Full,
+        }];
+        let items = compute_preview(&entries, &rules);
+        assert_cmp(&items, "aaa.txt", "aaa.md", PreviewStatus::Ok);
+        assert_cmp(&items, "bbb.txt", "bbb.md", PreviewStatus::Ok);
+        assert_cmp(&items, "ccc.txt", "ccc.md", PreviewStatus::Ok);
+        assert_cmp(&items, "ddd.txt", "ddd.md", PreviewStatus::Ok);
+        assert_cmp(&items, "eee.txt", "eee.md", PreviewStatus::Ok);
+        assert_cmp(&items, "fff.log", "fff.log", PreviewStatus::Unchanged);
+        assert_cmp(&items, "ggg.log", "ggg.log", PreviewStatus::Unchanged);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Python golden 对照 3b：正则 ^.*$ → same（组内冲突：每目录第一个 ok 其余冲突）
+    #[test]
+    fn cmp_scene3b_regex_all_same() {
+        let dir = make_cmp_dir("s3b");
+        let entries = cmp_entries(&dir);
+        let rules = [crate::rules::Rule::Regex {
+            pattern: r"^.*$".into(),
+            replace: "same".into(),
+            scope: crate::rules::Scope::Full,
+        }];
+        let items = compute_preview(&entries, &rules);
+        assert_cmp(&items, "aaa.txt", "same", PreviewStatus::Ok);
+        assert_cmp(&items, "bbb.txt", "same", PreviewStatus::Conflict);
+        assert_cmp(&items, "ccc.txt", "same", PreviewStatus::Conflict);
+        assert_cmp(&items, "ddd.txt", "same", PreviewStatus::Ok);
+        assert_cmp(&items, "eee.txt", "same", PreviewStatus::Conflict);
+        assert_cmp(&items, "fff.log", "same", PreviewStatus::Ok);
+        assert_cmp(&items, "ggg.log", "same", PreviewStatus::Conflict);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Python golden 对照 4：让位链 aaa→bbb（bbb 不动 → conflict 依赖让位），ccc→ddd ok
+    #[test]
+    fn cmp_scene4_yield_chain() {
+        let dir = make_cmp_dir("s4");
+        let entries = cmp_entries(&dir);
+        let rules = [
+            crate::rules::Rule::Replace {
+                search: "aaa".into(),
+                replace: "bbb".into(),
+                case_sensitive: false,
+                scope: crate::rules::Scope::Full,
+            },
+            crate::rules::Rule::Replace {
+                search: "ccc".into(),
+                replace: "ddd".into(),
+                case_sensitive: false,
+                scope: crate::rules::Scope::Full,
+            },
+        ];
+        let items = compute_preview(&entries, &rules);
+
+        // 根目录：aaa→bbb 依赖 bbb 让位（bbb unchanged）→ conflict；bbb 保持；ccc→ddd 磁盘无占用 ok
+        let aaa = items.iter().find(|i| i.old_name == "aaa.txt").unwrap();
+        assert_eq!(aaa.new_name, "bbb.txt");
+        assert_eq!(aaa.status, PreviewStatus::Conflict);
+        assert!(aaa.note.contains("让位"), "note={}", aaa.note);
+        assert_cmp(&items, "bbb.txt", "bbb.txt", PreviewStatus::Unchanged);
+        assert_cmp(&items, "ccc.txt", "ddd.txt", PreviewStatus::Ok);
+
+        // 其它目录原样
+        assert_cmp(&items, "ddd.txt", "ddd.txt", PreviewStatus::Unchanged);
+        assert_cmp(&items, "eee.txt", "eee.txt", PreviewStatus::Unchanged);
+        assert_cmp(&items, "fff.log", "fff.log", PreviewStatus::Unchanged);
+        assert_cmp(&items, "ggg.log", "ggg.log", PreviewStatus::Unchanged);
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }
