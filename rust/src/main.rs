@@ -870,11 +870,11 @@ impl eframe::App for RenameApp {
             PreviewAction::None => {}
         }
 
-        // 截图钩子（仅供验收）：PR_CAPTURE 指定路径时，等界面稳定（约 15 帧）后请求
-        // egui 自截图一帧并保存——过早请求会截到未完成布局的第一帧。
+        // 截图钩子（仅供验收）：PR_CAPTURE 指定路径时，等界面稳定（约 60 帧）后请求
+        // egui 自截图一帧并保存——过早请求会截到未完成布局/表格未填充完的帧。
         if let Some(out) = self.capture_path.clone() {
             self.frame_count += 1;
-            if self.frame_count < 15 {
+            if self.frame_count < 60 {
                 // 无前台窗口时 egui 空闲不重绘，必须显式要求继续绘制才能推进帧计数
                 ctx.request_repaint();
             } else if !self.capture_sent {
