@@ -515,9 +515,13 @@ impl eframe::App for RenameApp {
                 opts_changed |= ui.checkbox(&mut self.include_dirs, "包含文件夹").changed();
                 ui.separator();
                 ui.label("名称包含：");
-                opts_changed |= ui.text_edit_singleline(&mut self.inc_text).changed();
+                opts_changed |= ui.add(
+                    egui::TextEdit::singleline(&mut self.inc_text).desired_width(120.0)
+                ).changed();
                 ui.label("排除：");
-                opts_changed |= ui.text_edit_singleline(&mut self.exc_text).changed();
+                opts_changed |= ui.add(
+                    egui::TextEdit::singleline(&mut self.exc_text).desired_width(120.0)
+                ).changed();
                 opts_changed |= ui.checkbox(&mut self.use_regex, "正则").changed();
                 if opts_changed && self.tree.is_some() {
                     self.reload();
@@ -609,9 +613,9 @@ impl eframe::App for RenameApp {
                     self.undo();
                 }
             });
-            // 管理按钮独立一行（删除/排序/清空），窄面板下自动换行
+            // 管理按钮独立一行（删除/排序/清空），窄面板下自动换行；统一按钮宽度对齐
             ui.horizontal_wrapped(|ui| {
-                if ui.button("删除").clicked() {
+                if ui.add_sized([46.0, 20.0], egui::Button::new("删除")).clicked() {
                     if let Some(idx) = self.selected_rule {
                         if idx < self.rules.len() {
                             self.rules.remove(idx);
@@ -620,7 +624,7 @@ impl eframe::App for RenameApp {
                         }
                     }
                 }
-                if ui.button("↑").clicked() {
+                if ui.add_sized([28.0, 20.0], egui::Button::new("↑")).clicked() {
                     if let Some(idx) = self.selected_rule {
                         if idx > 0 && idx < self.rules.len() {
                             self.rules.swap(idx, idx - 1);
@@ -629,7 +633,7 @@ impl eframe::App for RenameApp {
                         }
                     }
                 }
-                if ui.button("↓").clicked() {
+                if ui.add_sized([28.0, 20.0], egui::Button::new("↓")).clicked() {
                     if let Some(idx) = self.selected_rule {
                         if idx + 1 < self.rules.len() {
                             self.rules.swap(idx, idx + 1);
@@ -638,7 +642,7 @@ impl eframe::App for RenameApp {
                         }
                     }
                 }
-                if ui.button("清空").clicked() {
+                if ui.add_sized([46.0, 20.0], egui::Button::new("清空")).clicked() {
                     if !self.rules.is_empty() {
                         self.rules.clear();
                         self.selected_rule = None;
@@ -1145,7 +1149,7 @@ fn main() -> eframe::Result {
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string_lossy().into_owned());
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1000.0, 700.0]).with_title("PowerRename — 批量重命名工具"),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1000.0, 620.0]).with_title("PowerRename — 批量重命名工具"),
         ..Default::default()
     };
     eframe::run_native(
