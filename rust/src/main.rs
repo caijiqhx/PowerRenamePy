@@ -507,68 +507,73 @@ impl eframe::App for RenameApp {
 
         egui::SidePanel::left("rules").resizable(true).default_width(320.0).frame(panel_frame()).show(ctx, |ui| {
             ui.heading("规则");
-            // 添加规则按钮（两列，避免挤在一行）
+            // 添加规则：单个下拉菜单收拢全部 9 种规则（不再占三行按钮）
             ui.horizontal(|ui| {
-                ui.label("添加：");
-                if ui.button("+ 替换").clicked() {
-                    self.push_form(RuleForm::Replace {
-                        search: String::new(),
-                        replace: String::new(),
-                        case_sensitive: false,
-                        scope: 0,
-                    });
-                }
-                if ui.button("+ 正则").clicked() {
-                    self.push_form(RuleForm::Regex {
-                        pattern: String::new(),
-                        replace: String::new(),
-                        scope: 0,
-                    });
-                }
-                if ui.button("+ 大小写").clicked() {
-                    self.push_form(RuleForm::Case { mode: 0, scope: 0 });
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label("      ");
-                if ui.button("+ 前缀").clicked() {
-                    self.push_form(RuleForm::Prefix { text: String::new() });
-                }
-                if ui.button("+ 后缀").clicked() {
-                    self.push_form(RuleForm::Suffix { text: String::new() });
-                }
-                if ui.button("+ 编号").clicked() {
-                    self.push_form(RuleForm::Number {
-                        pos: 1,
-                        start: "1".into(),
-                        step: "1".into(),
-                        digits: "2".into(),
-                        sep: " ".into(),
-                    });
-                }
-                if ui.button("+ 扩展名").clicked() {
-                    self.push_form(RuleForm::Ext { text: "txt".into() });
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label("      ");
-                if ui.button("+ 移除字符").clicked() {
-                    self.push_form(RuleForm::Strip {
-                        chars: "-_".into(),
-                        scope: 0,
-                    });
-                }
-                if ui.button("+ 压缩空白").clicked() {
-                    self.push_form(RuleForm::Trim { underscore: false });
-                }
-                if ui.button("+ 清单").clicked() {
-                    self.push_form(RuleForm::List {
-                        mapping: std::collections::HashMap::new(),
-                    });
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label("管理：");
+                ui.menu_button("＋ 添加规则", |ui| {
+                    if ui.button("查找替换").clicked() {
+                        self.push_form(RuleForm::Replace {
+                            search: String::new(),
+                            replace: String::new(),
+                            case_sensitive: false,
+                            scope: 0,
+                        });
+                        ui.close_menu();
+                    }
+                    if ui.button("正则替换").clicked() {
+                        self.push_form(RuleForm::Regex {
+                            pattern: String::new(),
+                            replace: String::new(),
+                            scope: 0,
+                        });
+                        ui.close_menu();
+                    }
+                    if ui.button("大小写转换").clicked() {
+                        self.push_form(RuleForm::Case { mode: 0, scope: 0 });
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("添加前缀").clicked() {
+                        self.push_form(RuleForm::Prefix { text: String::new() });
+                        ui.close_menu();
+                    }
+                    if ui.button("添加后缀").clicked() {
+                        self.push_form(RuleForm::Suffix { text: String::new() });
+                        ui.close_menu();
+                    }
+                    if ui.button("序列编号").clicked() {
+                        self.push_form(RuleForm::Number {
+                            pos: 1,
+                            start: "1".into(),
+                            step: "1".into(),
+                            digits: "2".into(),
+                            sep: " ".into(),
+                        });
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("替换扩展名").clicked() {
+                        self.push_form(RuleForm::Ext { text: "txt".into() });
+                        ui.close_menu();
+                    }
+                    if ui.button("移除字符").clicked() {
+                        self.push_form(RuleForm::Strip {
+                            chars: "-_".into(),
+                            scope: 0,
+                        });
+                        ui.close_menu();
+                    }
+                    if ui.button("压缩空白").clicked() {
+                        self.push_form(RuleForm::Trim { underscore: false });
+                        ui.close_menu();
+                    }
+                    if ui.button("按清单重命名").clicked() {
+                        self.push_form(RuleForm::List {
+                            mapping: std::collections::HashMap::new(),
+                        });
+                        ui.close_menu();
+                    }
+                });
+                // 管理按钮独立一行右侧（删除/排序/清空）
                 if ui.button("删除").clicked() {
                     if let Some(idx) = self.selected_rule {
                         if idx < self.rules.len() {
