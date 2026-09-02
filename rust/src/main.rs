@@ -805,10 +805,14 @@ impl eframe::App for RenameApp {
                             .striped(true)
                             .resizable(true)
                             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                            .column(Column::initial(300.0).at_least(160.0).resizable(true)) // 当前名称
-                            .column(Column::initial(260.0).at_least(140.0).resizable(true)) // 新名称
-                            .column(Column::initial(70.0).at_least(50.0))                    // 状态
-                            .column(Column::remainder().at_least(120.0))                     // 说明
+                            // 四列全部可拖拽调宽：resizable(true) 启用拖拽，
+                            // clip(true) 允许缩窄到内容宽度以下（否则长文件名会撑住最小宽）。
+                            // 注意：最后一列不能用 remainder()，remainder 列会被强制填充剩余
+                            // 空间并跳过拖拽逻辑（egui_extras 限制），故说明列也用 initial 可拖。
+                            .column(Column::initial(300.0).at_least(120.0).clip(true).resizable(true)) // 当前名称
+                            .column(Column::initial(260.0).at_least(100.0).clip(true).resizable(true)) // 新名称
+                            .column(Column::initial(70.0).at_least(50.0).clip(true).resizable(true))    // 状态
+                            .column(Column::initial(300.0).at_least(120.0).clip(true).resizable(true)) // 说明
                             .header(22.0, |mut header| {
                                 header.col(|ui| {
                                     ui.strong("当前名称（结构）");
