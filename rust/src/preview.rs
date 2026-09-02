@@ -1,4 +1,4 @@
-//! 预览与冲突检测（对齐 Python 版 compute_preview 语义）。
+//! 预览计算与冲突检测。
 //!
 //! 冲突判定按「目录」分组：同名占用只在同一目录内成立，跨目录同名互不影响。
 //! 组内三层判断：目标重名 → 磁盘占用 → 让位检查 + 依赖链反向传播。
@@ -10,7 +10,7 @@ use crate::fs_tree::FileEntry;
 use crate::rules::Rule;
 use crate::transform::transform_name_indexed;
 
-/// 预览状态（对齐 Python STATUS_*）
+/// 预览状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewStatus {
     Ok,
@@ -30,13 +30,13 @@ pub struct PreviewItem {
 }
 
 impl PreviewItem {
-    /// 是否“实际会执行改名”（对齐 Python STATUS_OK 语义）
+    /// 是否“实际会执行改名”。
     pub fn will_rename(&self) -> bool {
         self.status == PreviewStatus::Ok
     }
 }
 
-/// 检查 Windows 非法字符：`<>:"/\|?*` 及控制字符（对齐 Python has_invalid_chars）
+/// 检查 Windows 非法字符：`<>:"/\|?*` 及控制字符。
 pub fn has_invalid_chars(name: &str) -> bool {
     name.chars()
         .any(|c| matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || (c as u32) < 0x20)
@@ -45,7 +45,7 @@ pub fn has_invalid_chars(name: &str) -> bool {
 /// 计算预览与冲突检测。
 pub fn compute_preview(entries: &[FileEntry], rules: &[Rule]) -> Vec<PreviewItem> {
     let n = entries.len();
-    // 每个条目只转换一次；序号 = 条目在列表中的下标（对齐 Python enumerate 语义）
+    // 每个条目只转换一次；序号 = 条目在列表中的下标
     let transformed: Vec<String> = entries
         .iter()
         .enumerate()
@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn same_dir_duplicate_target_conflict() {
-        // 对齐 Python test_conflict_duplicate_target：正则把两个文件都换成同名 → 目标重名
+        // 冲突场景：正则把两个文件都换成同名 → 目标重名
         let dir = make_tmp("dup", &["a.txt", "b.txt"]);
         let entries = load_entries(&dir, &LoadOptions::default());
         let items = compute_preview(&entries, &[regex("^.*$", "same")]);
@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn hold_still_chain_conflict() {
-        // 对齐 Python 实测 golden：a→b、b→c（磁盘占位链，c 保持原名）
+        // 冲突场景：a→b、b→c（磁盘占位链，c 保持原名）
         // → a=conflict(依赖 c 让位), b=conflict(与 a 目标重名), c=unchanged
         let dir = make_tmp("chain", &["a.txt", "b.txt", "c.txt"]);
         let entries = load_entries(&dir, &LoadOptions::default());
@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn cross_dir_same_new_name_ok() {
-        // 不同目录改成同名：各自目录都无占用 → 全部 OK（对齐 Python 场景3）
+        // 不同目录改成同名：各自目录都无占用 → 全部 OK
         let dir = make_tmp("cross", &["sub1/a.txt", "sub2/a.txt"]);
         let entries = load_entries(&dir, &LoadOptions::default());
         let items = compute_preview(&entries, &[replace("a", "x")]);
@@ -320,7 +320,7 @@ mod integration_tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// 构造与 Python golden 相同的目录：
+    /// 构造对照场景的目录：
     /// base/aaa.txt, bbb.txt, ccc.txt
     /// base/sub/ddd.txt, eee.txt
     /// base/log/fff.log, ggg.log
@@ -349,7 +349,7 @@ mod integration_tests {
         dir
     }
 
-/// 加载条目（对齐 Python load_entries recursive+files，不含目录）。
+/// 加载条目（recursive+files，不含目录）。
     fn cmp_entries(dir: &std::path::Path) -> Vec<crate::fs_tree::FileEntry> {
         crate::fs_tree::load_entries(
             dir,
@@ -369,7 +369,7 @@ mod integration_tests {
         assert_eq!(it.status, exp_status, "status for {old}");
     }
 
-    /// Python golden 对照 1：编号(后缀,2位,_) + 前缀（流水线组合）
+    /// 对照场景 1：编号(后缀,2位,_) + 前缀（流水线组合）
     #[test]
     fn cmp_scene1_number_plus_prefix() {
         let dir = make_cmp_dir("s1");
@@ -395,7 +395,7 @@ mod integration_tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// Python golden 对照 2：全目录 .txt → .md（跨目录各自独立，log 目录不变）
+    /// 对照场景 2：全目录 .txt → .md（跨目录各自独立，log 目录不变）
     #[test]
     fn cmp_scene2_ext_change() {
         let dir = make_cmp_dir("s2");
@@ -417,7 +417,7 @@ mod integration_tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// Python golden 对照 3b：正则 ^.*$ → same（组内冲突：每目录第一个 ok 其余冲突）
+    /// 对照场景 3b：正则 ^.*$ → same（组内冲突：每目录第一个 ok 其余冲突）
     #[test]
     fn cmp_scene3b_regex_all_same() {
         let dir = make_cmp_dir("s3b");
@@ -438,7 +438,7 @@ mod integration_tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// Python golden 对照 4：让位链 aaa→bbb（bbb 不动 → conflict 依赖让位），ccc→ddd ok
+    /// 对照场景 4：让位链 aaa→bbb（bbb 不动 → conflict 依赖让位），ccc→ddd ok
     #[test]
     fn cmp_scene4_yield_chain() {
         let dir = make_cmp_dir("s4");

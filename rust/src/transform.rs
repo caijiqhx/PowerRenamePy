@@ -1,4 +1,4 @@
-//! 名称变换流水线（对齐 Python 版 transform_name / _apply_rule 语义）。
+//! 名称变换流水线（规则依次应用）。
 
 use crate::rules::{CaseMode, NumberPos, Rule, Scope};
 
@@ -28,14 +28,14 @@ pub fn transform_name_original(name: &str, rules: &[Rule], original: &str, index
     cur
 }
 
-/// 应用单条规则（仅对齐 Python _apply_rule 除 List 外的调用）。
+/// 应用单条规则（List 规则除外）。
 pub fn apply_rule(name: &str, rule: &Rule) -> String {
     apply_rule_original(name, rule, name, 0)
 }
 
 /// 应用单条规则（带原始文件名与条目序号）。
 ///
-/// Python _apply_rule 语义：
+/// 规则应用语义：
 /// - 空名直接返回
 /// - 前缀/后缀/编号/扩展名/压缩空白/清单 处理整个文件名（前四个不拆分扩展名？——不，
 ///   后缀/编号·后缀/扩展名 内部会拆分主名与扩展名）
@@ -78,7 +78,7 @@ pub fn apply_rule_original(name: &str, rule: &Rule, original: &str, index: usize
             let (stem, _ext) = split_ext(name);
             let ext = text.trim();
             if ext.is_empty() {
-                // Python：空文本 → 去掉扩展名（返回主名）
+                // 空文本 → 去掉扩展名（返回主名）
                 return stem;
             }
             let ext = if ext.starts_with('.') { ext.to_string() } else { format!(".{ext}") };
@@ -86,11 +86,11 @@ pub fn apply_rule_original(name: &str, rule: &Rule, original: &str, index: usize
         }
 
         Rule::Trim { underscore } => {
-            // Python re.sub(r"\s+", " ", name).strip()：Unicode 空白（regex crate \s 默认 Unicode）
+            // re.sub(r"\s+", " ", name).strip() 语义：Unicode 空白（regex crate \s 默认 Unicode）
             let out = regex::Regex::new(r"\s+")
                 .map(|re| re.replace_all(name, " ").into_owned())
                 .unwrap_or_else(|_| name.to_string());
-            // Python 的 strip 只去首尾的 ASCII/Unicode 空白
+            // strip 只去首尾的 ASCII/Unicode 空白
             let out = out.trim().to_string();
             if *underscore {
                 out.replace(' ', "_")
@@ -128,7 +128,7 @@ pub fn apply_rule_original(name: &str, rule: &Rule, original: &str, index: usize
                 }
                 Rule::Case { mode, .. } => apply_case(&target, *mode),
                 Rule::Strip { chars, .. } => {
-                    // Python：对 chars 中每个字符逐个 replace("", "")（保持原有顺序）
+                    // 对 chars 中每个字符逐个 replace（保持原有顺序）
                     let mut out = target;
                     for ch in chars.chars() {
                         out = out.replace(ch, "");
@@ -147,12 +147,12 @@ pub fn apply_rule_original(name: &str, rule: &Rule, original: &str, index: usize
     }
 }
 
-/// 大小写转换（对齐 Python：lower / upper / title / capitalize）。
+/// 大小写转换（lower / upper / title / capitalize）。
 fn apply_case(target: &str, mode: CaseMode) -> String {
     match mode {
         CaseMode::Lower => target.to_lowercase(),
         CaseMode::Upper => target.to_uppercase(),
-        // Python str.title()：每个“词”首字母大写、其余小写；词边界 = 非字母
+        // str.title() 语义：每个“词”首字母大写、其余小写；词边界 = 非字母
         CaseMode::Title => {
             let mut out = String::with_capacity(target.len());
             let mut at_word_start = true;
@@ -171,7 +171,7 @@ fn apply_case(target: &str, mode: CaseMode) -> String {
             }
             out
         }
-        // Python capitalize()：仅首字符大写，其余不变
+        // capitalize() 语义：仅首字符大写，其余不变
         CaseMode::Capitalize => {
             let mut chars = target.chars();
             match chars.next() {
@@ -183,7 +183,7 @@ fn apply_case(target: &str, mode: CaseMode) -> String {
 }
 
 fn split_ext(name: &str) -> (String, String) {
-    // 对齐 Python os.path.splitext：最后一个点之后为扩展名（含点），无点时 ext 为空
+    // 类似 os.path.splitext：最后一个点之后为扩展名（含点），无点时 ext 为空
     match name.rfind('.') {
         Some(pos) if pos > 0 => (name[..pos].to_string(), name[pos..].to_string()),
         _ => (name.to_string(), String::new()),
@@ -208,7 +208,7 @@ fn apply_replace(target: &str, search: &str, replace: &str, case_sensitive: bool
 }
 
 /// 正则替换：pattern 匹配替换为 replace。
-/// 无效正则（用户输入错误）时保持原名不变（对齐 Python 的 try/except re.error → return name）。
+/// 无效正则（用户输入错误）时保持原名不变（捕获错误 → 返回原名）。
 fn apply_regex(target: &str, pattern: &str, replace: &str) -> String {
     match fancy_regex::Regex::new(pattern) {
         Ok(re) => re.replace_all(target, replace).into_owned(),
@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn regex_root_lookaround() {
-        // 支持 lookbehind（Python re 支持，fancy-regex 也支持）
+        // 支持 lookbehind（fancy-regex）
         assert_eq!(transform_name("abc123", &[regex(r"(?<=\d)\d", "X")]), "abc1XX");
     }
 
@@ -325,7 +325,7 @@ mod tests {
     }
     #[test]
     fn case_title_keeps_rest_lower() {
-        // Python str.title()：词首大写、词中大写转小写；. 后是词边界（→ .Txt）
+        // str.title() 语义：词首大写、词中大写转小写；. 后是词边界（→ .Txt）
         assert_eq!(transform_name("hello WORLD.txt", &[case(Scope::Full, CaseMode::Title)]), "Hello World.Txt");
         // 数字非词边界（a1b2 → A1B2，b 不大写）
         assert_eq!(transform_name("a1b2.txt", &[case(Scope::Full, CaseMode::Title)]), "A1B2.Txt");
@@ -418,7 +418,7 @@ mod tests {
 
     #[test]
     fn pipeline_combines_rules() {
-        // prefix → suffix → number(padded) → trim，模拟 Python 多规则流水线
+        // prefix → suffix → number(padded) → trim，多规则流水线
         let rules = [
             Rule::Prefix { text: "p_".into() },
             Rule::Suffix { text: "_s".into() },

@@ -1,4 +1,4 @@
-//! PowerRenamePy Rust 版 — egui GUI 主程序。
+//! PowerRename — egui GUI 主程序。
 //!
 //! 布局：
 //!   ┌────────────────────────────────────────────┐
@@ -324,7 +324,7 @@ impl RenameApp {
         let error = self.preview_by_path.values().filter(|r| r.status == PreviewStatus::Error).count();
         let unchanged = self.preview_by_path.values().filter(|r| r.status == PreviewStatus::Unchanged).count();
         let total = self.preview_by_path.len();
-        // 节点总数（树全节点，含根目录；对齐 Python flatten_tree(tree_root)）
+        // 节点总数（树全节点，含根目录）
         let mut node_count = 0usize;
         let mut stack2: Vec<&TreeNode> = vec![self.tree.as_ref().unwrap()];
         while let Some(n) = stack2.pop() {
@@ -1022,7 +1022,7 @@ fn render_tree_rows(
 
     // 文件行
     let row_info = by_path.get(&node.path);
-    // 不在预览映射 → 该节点被筛选跳过（不可改名），与 Python「跳过」标签一致
+    // 不在预览映射 → 该节点被筛选跳过（不可改名），显示「跳过」标签
     let is_skipped = row_info.is_none();
     let (new_name, status, note) = match row_info {
         Some(r) => (r.new_name.clone(), r.status, r.note.clone()),
@@ -1080,11 +1080,11 @@ fn main() -> eframe::Result {
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string_lossy().into_owned());
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1000.0, 700.0]).with_title("PowerRename Py — 批量重命名工具 (Rust)"),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1000.0, 700.0]).with_title("PowerRename — 批量重命名工具"),
         ..Default::default()
     };
     eframe::run_native(
-        "PowerRenamePy Rust",
+        "PowerRename",
         options,
         Box::new(move |cc| {
             install_chinese_font(&cc.egui_ctx);

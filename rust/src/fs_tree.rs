@@ -1,6 +1,6 @@
 //! 文件系统目录树加载（基于 walkdir，Rust 惯用实现）。
 //!
-//! 语义对齐 Python 版 load_tree / flatten_tree / load_entries：
+//! 核心概念：
 //! - 目录节点始终保留（结构展示），renameable 决定是否参与改名
 //! - 递归/深度由 walkdir 的 min_depth/max_depth 控制
 //! - 排序：目录优先，其次名称不区分大小写
@@ -50,7 +50,7 @@ impl Default for LoadOptions {
     }
 }
 
-/// 名称是否通过包含/排除筛选（对齐 Python name_ok）。
+/// 名称是否通过包含/排除筛选。
 fn name_ok(name: &str, opts: &LoadOptions) -> bool {
     if !opts.inc_text.is_empty() && !match_text(name, &opts.inc_text, opts.use_regex) {
         return false;
@@ -82,12 +82,12 @@ pub fn load_tree(dirpath: &Path, opts: &LoadOptions) -> TreeNode {
     // 先收集全部节点 path，再建树
     let mut nodes: Vec<(PathBuf, bool)> = Vec::new(); // (path, is_dir)
     for entry in WalkDir::new(dirpath).min_depth(1).max_depth(max_depth).follow_links(false) {
-        let Ok(entry) = entry else { continue }; // 权限等错误跳过（对齐 Python OSError 跳过）
+        let Ok(entry) = entry else { continue }; // 权限等错误直接跳过
         let is_dir = entry.file_type().is_dir();
         nodes.push((entry.into_path(), is_dir));
     }
 
-    // 按（目录优先，名称不区分大小写）排序 —— 对齐 Python sorted(key=(not is_dir, name.lower))
+    // 排序：目录优先，名称不区分大小写
     nodes.sort_by(|a, b| {
         let name_a = a.0.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         let name_b = b.0.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -149,7 +149,7 @@ pub fn load_tree(dirpath: &Path, opts: &LoadOptions) -> TreeNode {
     for (p, is_dir) in &nodes {
         insert_into(&mut root, p, *is_dir, opts);
     }
-    // 每层 children 排序：目录在前，名称不区分大小写（对齐 Python 每层 sorted）
+    // 每层 children 排序：目录在前，名称不区分大小写
     sort_children(&mut root);
     // 目录节点的 renameable：由 include_dirs + name_ok 决定
     fix_dir_renameable(&mut root, opts);
@@ -184,7 +184,7 @@ pub fn flatten_tree(node: &TreeNode, out: &mut Vec<TreeNode>) {
     }
 }
 
-/// load_entries：加载目录条目并按筛选条件过滤（对齐 Python 版）。
+/// load_entries：加载目录条目并按筛选条件过滤。
 pub fn load_entries(dirpath: &Path, opts: &LoadOptions) -> Vec<FileEntry> {
     if !dirpath.is_dir() {
         return Vec::new();
@@ -300,7 +300,7 @@ mod tests {
         let root = load_tree(&tmp.join("a"), &opts);
         let names: Vec<&str> = root.children.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"root.txt"));
-        // 节点保留但重命名为 false（Python 语义：保留结构，仅标记不可改名）
+        // 节点保留但重命名为 false（保留结构，仅标记不可改名）
         assert!(root.children.iter().any(|c| c.name == "z.txt" && !c.renameable));
         assert!(root.children.iter().any(|c| c.name == "A.txt" && !c.renameable));
         assert!(root.children.iter().any(|c| c.name == "root.txt" && c.renameable));

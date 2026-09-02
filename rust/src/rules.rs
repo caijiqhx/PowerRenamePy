@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-/// 规则作用范围（对齐 Python 版 scope 语义）。
+/// 规则作用范围。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     /// 完整文件名（含扩展名）
@@ -13,7 +13,7 @@ pub enum Scope {
     Ext,
 }
 
-/// 大小写转换模式（对齐 Python CASE_OPTIONS）。
+/// 大小写转换模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaseMode {
     Lower,
@@ -22,7 +22,7 @@ pub enum CaseMode {
     Capitalize,
 }
 
-/// 序列编号插入位置（对齐 Python POS_OPTIONS）。
+/// 序列编号插入位置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NumberPos {
     /// 编号加在名称最前面（前缀）

@@ -2,7 +2,7 @@
 name = "power_rename"
 version = "0.1.0"
 edition = "2021"
-description = "Batch file renaming tool (Rust port of PowerRenamePy)"
+description = "Batch file renaming tool with live preview (egui GUI)"
 
 [lib]
 name = "power_rename"
