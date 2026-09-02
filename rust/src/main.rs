@@ -5,11 +5,12 @@
 //!   │ 路径输入 [加载] 递归□ 深度[ ] 含文件□ 含文件夹□ │
 //!   │ 名称包含[ ] 排除[ ] 正则□                   │
 //!   ├──────────────┬─────────────────────────────┤
-//!   │ 规则列表      │ 预览树（原名 → 新名 + 状态） │
-//!   │ [添加][删除]  │                             │
-//!   │ 规则表单      │                             │
+//!   │ +添加规则 应用撤销 │                          │
+//!   │ [删除][↑][↓][清空]│                          │
+//!   │ 规则列表        │ 预览树（原名 → 新名 + 状态） │
+//!   │ 规则表单        │                             │
 //!   ├──────────────┴─────────────────────────────┤
-//!   │ 状态栏   [应用] [撤销]                      │
+//!   │ 状态栏                                       │
 //!   └────────────────────────────────────────────┘
 
 // 发布版不挂控制台窗口（避免运行时出现黑色终端）；debug 构建保留便于看输出
@@ -524,17 +525,10 @@ impl eframe::App for RenameApp {
             });
         });
 
+        // 底部状态栏（应用/撤销按钮已移至规则面板）
         egui::TopBottomPanel::bottom("bottom").frame(panel_frame()).show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label(&self.status_msg);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("撤销").clicked() {
-                        self.undo();
-                    }
-                    if ui.button("应用").clicked() {
-                        self.apply();
-                    }
-                });
             });
         });
 
@@ -606,6 +600,14 @@ impl eframe::App for RenameApp {
                         ui.close_menu();
                     }
                 });
+                // 应用/撤销：放「+ 添加规则」右边同一行，方便改完规则直接操作
+                ui.separator();
+                if ui.button("应用").clicked() {
+                    self.apply();
+                }
+                if ui.button("撤销").clicked() {
+                    self.undo();
+                }
             });
             // 管理按钮独立一行（删除/排序/清空），窄面板下自动换行
             ui.horizontal_wrapped(|ui| {
@@ -1009,10 +1011,18 @@ fn render_tree_rows(
                     ui.add_space(depth as f32 * 16.0);
                     // 折叠三角用 painter 直接绘制（▸/▾ 等字符在中文系统字体中
                     // 无字形会显示成问号；画出来的三角跨平台字体无关、永不出问号）
-                    // 三角响应单击：折叠/展开切到这个三角上，目录名双击不再有折叠副作用
+                    // 三角响应单击：折叠/展开切到这个三角上，目录名双击不再有折叠副作用。
+                    // hover 时三角变强调蓝（与文件行文本色区分）并加浅蓝底提示可点击
                     let (tri_rect, tri_resp) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::click());
                     let painter = ui.painter();
-                    let tri_color = ui.visuals().text_color();
+                    let tri_color = if tri_resp.hovered() {
+                        egui::Color32::from_rgb(0x2F, 0x6F, 0xD5) // 强调蓝：hover 高亮
+                    } else {
+                        ui.visuals().text_color()
+                    };
+                    if tri_resp.hovered() {
+                        painter.rect_filled(tri_rect.expand2(egui::vec2(2.0, 1.0)), 2.0, egui::Color32::from_rgb(0xE8, 0xF0, 0xFB));
+                    }
                     let c = tri_rect.center();
                     let s = 3.5;
                     let tri: Vec<egui::Pos2> = if is_open {
