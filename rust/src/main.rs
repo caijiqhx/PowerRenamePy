@@ -542,7 +542,7 @@ impl eframe::App for RenameApp {
             ui.heading("规则");
             // 添加规则：单个下拉菜单收拢全部 9 种规则（不再占三行按钮）
             ui.horizontal(|ui| {
-                ui.menu_button("＋ 添加规则", |ui| {
+                ui.menu_button("+ 添加规则", |ui| {
                     if ui.button("查找替换").clicked() {
                         self.push_form(RuleForm::Replace {
                             search: String::new(),
@@ -946,7 +946,7 @@ impl eframe::App for RenameApp {
 
 /// 递归把树渲染进表格 body。
 ///
-/// 目录行：第一列显示带缩进的「📁 名字」+ 折叠三角（点击切换展开）；
+/// 目录行：第一列显示缩进 + painter 绘制的折叠三角 + 名字（点击切换展开）；
 /// 文件行：显示原名/新名/状态/说明。目录行本身不在预览映射中，后三列留空。
 /// 右键行：目录 → 打开文件夹；文件 → 打开所在文件夹；空白/表头 → 刷新预览。
 fn render_tree_rows(
@@ -969,9 +969,31 @@ fn render_tree_rows(
             row.col(|ui| {
                 ui.horizontal(|ui| {
                     ui.add_space(depth as f32 * 16.0);
-                    let triangle = if is_open { "▾" } else { "▸" };
+                    // 折叠三角用 painter 直接绘制（▸/▾ 等字符在中文系统字体中
+                    // 无字形会显示成问号；画出来的三角跨平台字体无关、永不出问号）
+                    let (tri_rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                    let painter = ui.painter();
+                    let color = ui.visuals().text_color();
+                    let c = tri_rect.center();
+                    let s = 3.5;
+                    let tri: Vec<egui::Pos2> = if is_open {
+                        // 展开：向下小三角 ▼
+                        vec![
+                            egui::pos2(c.x - s, c.y - s * 0.6),
+                            egui::pos2(c.x + s, c.y - s * 0.6),
+                            egui::pos2(c.x, c.y + s),
+                        ]
+                    } else {
+                        // 折叠：向右小三角 ▶
+                        vec![
+                            egui::pos2(c.x - s, c.y - s),
+                            egui::pos2(c.x - s, c.y + s),
+                            egui::pos2(c.x + s, c.y),
+                        ]
+                    };
+                    painter.add(egui::Shape::convex_polygon(tri, color, egui::Stroke::NONE));
                     // 目录行用 selectable_label(false) 保留点击态但无「选中」高亮
-                    let resp = ui.selectable_label(false, format!("{triangle} 📁 {}", node.name));
+                    let resp = ui.selectable_label(false, &node.name);
                     if resp.clicked() {
                         let next = !is_open;
                         if next {
@@ -1028,7 +1050,7 @@ fn render_tree_rows(
         row.col(|ui| {
             ui.horizontal(|ui| {
                 ui.add_space(depth as f32 * 16.0);
-                let label = ui.colored_label(color, format!("📄 {}", node.name));
+                let label = ui.colored_label(color, &node.name);
                 if label.secondary_clicked() {
                     *action = PreviewAction::Reveal(node.path.clone());
                 }
