@@ -537,7 +537,6 @@ impl eframe::App for RenameApp {
         });
 
         egui::SidePanel::left("rules").resizable(true).default_width(240.0).frame(panel_frame()).show(ctx, |ui| {
-            ui.heading("规则");
             // 添加规则：单个下拉菜单收拢全部 9 种规则（不再占三行按钮）
             ui.horizontal_wrapped(|ui| {
                 ui.menu_button("+ 添加规则", |ui| {
@@ -615,7 +614,7 @@ impl eframe::App for RenameApp {
             });
             // 管理按钮独立一行（删除/排序/清空），窄面板下自动换行；统一按钮宽度对齐
             ui.horizontal_wrapped(|ui| {
-                if ui.add_sized([46.0, 20.0], egui::Button::new("删除")).clicked() {
+                if ui.add_sized([50.0, 24.0], egui::Button::new("删除")).clicked() {
                     if let Some(idx) = self.selected_rule {
                         if idx < self.rules.len() {
                             self.rules.remove(idx);
@@ -624,7 +623,7 @@ impl eframe::App for RenameApp {
                         }
                     }
                 }
-                if ui.add_sized([28.0, 20.0], egui::Button::new("↑")).clicked() {
+                if ui.add_sized([30.0, 24.0], egui::Button::new("↑")).clicked() {
                     if let Some(idx) = self.selected_rule {
                         if idx > 0 && idx < self.rules.len() {
                             self.rules.swap(idx, idx - 1);
@@ -633,7 +632,7 @@ impl eframe::App for RenameApp {
                         }
                     }
                 }
-                if ui.add_sized([28.0, 20.0], egui::Button::new("↓")).clicked() {
+                if ui.add_sized([30.0, 24.0], egui::Button::new("↓")).clicked() {
                     if let Some(idx) = self.selected_rule {
                         if idx + 1 < self.rules.len() {
                             self.rules.swap(idx, idx + 1);
@@ -642,7 +641,7 @@ impl eframe::App for RenameApp {
                         }
                     }
                 }
-                if ui.add_sized([46.0, 20.0], egui::Button::new("清空")).clicked() {
+                if ui.add_sized([50.0, 24.0], egui::Button::new("清空")).clicked() {
                     if !self.rules.is_empty() {
                         self.rules.clear();
                         self.selected_rule = None;
@@ -787,7 +786,11 @@ impl eframe::App for RenameApp {
                     }
                 }
             } else if self.rules.is_empty() {
-                ui.label("（还没有规则，点上方添加）");
+                // 无规则：居中大字水印（替代原「（还没有规则）」提示）
+                ui.centered_and_justified(|ui| {
+                    ui.label(egui::RichText::new("规则").size(48.0).color(egui::Color32::from_gray(0xBB)));
+                });
+                ui.add_space(12.0);
             } else {
                 ui.label("（选择一条规则编辑）");
             }
@@ -797,7 +800,6 @@ impl eframe::App for RenameApp {
         let mut action: PreviewAction = PreviewAction::None;
 
         egui::CentralPanel::default().frame(panel_frame()).show(ctx, |ui| {
-            ui.heading("预览");
             if let Some(tree) = &self.tree {
                 // 多列表格：当前名称（树形缩进）/ 新名称 / 状态 / 说明
                 // 包一层双向滚动区：列总宽超过面板宽度时可左右滚动
@@ -819,7 +821,7 @@ impl eframe::App for RenameApp {
                             .column(Column::initial(260.0).at_least(100.0).clip(true).resizable(true)) // 新名称
                             .column(Column::initial(70.0).at_least(50.0).clip(true).resizable(true))    // 状态
                             .column(Column::initial(300.0).at_least(120.0).clip(true).resizable(true)) // 说明
-                            .header(22.0, |mut header| {
+                            .header(26.0, |mut header| {
                                 header.col(|ui| {
                                     ui.strong("当前名称（结构）");
                                 });
@@ -841,7 +843,7 @@ impl eframe::App for RenameApp {
                                 // 根目录恒可见（且默认展开）；子节点仅当其父目录展开时才渲染
                                 render_tree_rows(&mut body, tree, &self.preview_by_path, &mut self.expanded, &mut action, true, true, 0);
                                 if tree.children.is_empty() {
-                                    body.row(22.0, |mut row| {
+                                    body.row(26.0, |mut row| {
                                         row.col(|ui| {
                                             ui.label("（空目录）");
                                         });
@@ -853,7 +855,10 @@ impl eframe::App for RenameApp {
                             });
                     });
             } else {
-                ui.label("（未加载目录）");
+                // 未加载目录：居中大字水印
+                ui.centered_and_justified(|ui| {
+                    ui.label(egui::RichText::new("预览").size(60.0).color(egui::Color32::from_gray(0xBB)));
+                });
             }
         });
 
@@ -1009,7 +1014,7 @@ fn render_tree_rows(
                 PreviewStatus::Error => "错误",
             }
         };
-        body.row(22.0, |mut row| {
+        body.row(26.0, |mut row| {
             row.col(|ui| {
                 ui.horizontal(|ui| {
                     ui.add_space(depth as f32 * 16.0);
@@ -1117,7 +1122,7 @@ fn render_tree_rows(
             PreviewStatus::Error => "错误",
         }
     };
-    body.row(22.0, |mut row| {
+    body.row(26.0, |mut row| {
         row.col(|ui| {
             ui.horizontal(|ui| {
                 ui.add_space(depth as f32 * 16.0);
@@ -1208,7 +1213,19 @@ fn install_light_theme(ctx: &egui::Context) {
 
     // 按钮稍微加大：只调内边距（字号不变，文本仍按原字号渲染）
     ctx.style_mut(|style| {
-        style.spacing.button_padding = egui::vec2(8.0, 3.0);
+        // 全局字体放大两号：Body/Button/Monospace 14→17，Heading 20→24，Small 10→12
+        for (ts, font_id) in &mut style.text_styles {
+            let new_size = match ts {
+                egui::TextStyle::Small => 12.0,
+                egui::TextStyle::Body | egui::TextStyle::Button | egui::TextStyle::Monospace => 17.0,
+                egui::TextStyle::Heading => 24.0,
+                egui::TextStyle::Name(_) => font_id.size + 3.0,
+            };
+            font_id.size = new_size;
+        }
+        // 按钮等控件尺寸随字号放大：内边距加大 + 最小交互尺寸拉高
+        style.spacing.button_padding = egui::vec2(10.0, 4.0);
+        style.spacing.interact_size = egui::vec2(46.0, 22.0);
     });
 
     ctx.set_visuals(visuals);
