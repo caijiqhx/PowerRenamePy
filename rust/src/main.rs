@@ -220,6 +220,7 @@ struct RenameApp {
     /// 截图钩子（仅供验收）：PR_CAPTURE 指向输出路径时，启动后自截图一帧 BMP 并退出
     capture_path: Option<PathBuf>,
     capture_sent: bool,
+    frame_count: u32,
 }
 
 impl RenameApp {
@@ -246,6 +247,7 @@ impl RenameApp {
             undo: UndoManager::new(),
             capture_path,
             capture_sent: false,
+            frame_count: 0,
         }
     }
 
@@ -868,9 +870,14 @@ impl eframe::App for RenameApp {
             PreviewAction::None => {}
         }
 
-        // 截图钩子（仅供验收）：PR_CAPTURE 指定路径时，请求 egui 自截图一帧并保存
+        // 截图钩子（仅供验收）：PR_CAPTURE 指定路径时，等界面稳定（约 15 帧）后请求
+        // egui 自截图一帧并保存——过早请求会截到未完成布局的第一帧。
         if let Some(out) = self.capture_path.clone() {
-            if !self.capture_sent {
+            self.frame_count += 1;
+            if self.frame_count < 15 {
+                // 无前台窗口时 egui 空闲不重绘，必须显式要求继续绘制才能推进帧计数
+                ctx.request_repaint();
+            } else if !self.capture_sent {
                 self.capture_sent = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
             }
