@@ -216,6 +216,8 @@ struct RenameApp {
     expanded: std::collections::HashSet<std::path::PathBuf>,
     /// 预览中当前点击选中的行（path；None = 未选中）
     selected_preview: Option<std::path::PathBuf>,
+    /// 预览区缩放倍率（Ctrl+滚轮，0.5~2.0，仅作用于预览表格）
+    preview_zoom: f32,
     /// 清单映射查看窗口（存规则序号，None=关闭）
     mapping_view: Option<usize>,
     status_msg: String,
@@ -253,6 +255,7 @@ impl RenameApp {
             preview_by_path: std::collections::HashMap::new(),
             expanded: std::collections::HashSet::new(),
             selected_preview: None,
+            preview_zoom: 1.0,
             mapping_view: None,
             status_msg: String::new(),
             undo: UndoManager::new(),
@@ -804,6 +807,43 @@ impl eframe::App for RenameApp {
 
         egui::CentralPanel::default().frame(panel_frame()).show(ctx, |ui| {
             if let Some(tree) = &self.tree {
+                // ---- 预览区 Ctrl+滚轮缩放：只作用于预览表格（字号/行高/列宽/缩进） ----
+                // 鼠标须在预览区上方才响应（避免缩放规则面板以外的区域）；滚动事件自带 ctrl 修饰时
+                // 清掉平滑滚动，阻止同一事件既缩放又滚动滚动条。
+                if ui.rect_contains_pointer(ui.clip_rect()) {
+                    let mut zoom_delta = 0.0;
+                    ui.input(|i| {
+                        for ev in &i.events {
+                            if let egui::Event::MouseWheel { unit, delta, modifiers } = ev {
+                                if modifiers.ctrl {
+                                    let per = match unit {
+                                        egui::MouseWheelUnit::Point => 0.002,
+                                        egui::MouseWheelUnit::Line => 0.1,
+                                        egui::MouseWheelUnit::Page => 0.5,
+                                    };
+                                    zoom_delta += delta.y * per;
+                                }
+                            }
+                        }
+                    });
+                    if zoom_delta != 0.0 {
+                        self.preview_zoom = (self.preview_zoom + zoom_delta).clamp(0.5, 2.0);
+                        // 清掉同一事件的平滑滚动，避免缩放同时滚动滚动条
+                        ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
+                    }
+                    // zoom 变化时表格 state 重建，列宽按缩放后的 initial 重新计算
+                    // （可拖拽列会锁存上一帧宽度，id_salt 变更后强制重算）
+                }
+                let zoom = self.preview_zoom;
+                // 预览区局部字号：放大/缩小，不影响规则面板与全局
+                {
+                    let style = ui.style_mut();
+                    for (ts, font_id) in &mut style.text_styles {
+                        if matches!(ts, egui::TextStyle::Body | egui::TextStyle::Button | egui::TextStyle::Monospace) {
+                            font_id.size = 17.0 * zoom;
+                        }
+                    }
+                }
                 // 多列表格：当前名称（树形缩进）/ 新名称 / 状态 / 说明
                 // 包一层双向滚动区：列总宽超过面板宽度时可左右滚动
                 use egui_extras::{Column, TableBuilder};
@@ -815,16 +855,20 @@ impl eframe::App for RenameApp {
                             .min_scrolled_height(300.0)
                             .striped(true)
                             .resizable(true)
+                            // zoom 变化时重建表格状态（列宽锁存首帧，id_salt 变更强制重算）
+                            .id_salt(("preview_table", zoom.to_bits()))
                             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                             // 四列全部可拖拽调宽：resizable(true) 启用拖拽，
                             // clip(true) 允许缩窄到内容宽度以下（否则长文件名会撑住最小宽）。
                             // 注意：最后一列不能用 remainder()，remainder 列会被强制填充剩余
                             // 空间并跳过拖拽逻辑（egui_extras 限制），故说明列也用 initial 可拖。
-                            .column(Column::initial(300.0).at_least(120.0).clip(true).resizable(true)) // 当前名称
-                            .column(Column::initial(260.0).at_least(100.0).clip(true).resizable(true)) // 新名称
-                            .column(Column::initial(70.0).at_least(50.0).clip(true).resizable(true))    // 状态
-                            .column(Column::initial(300.0).at_least(120.0).clip(true).resizable(true)) // 说明
-                            .header(26.0, |mut header| {
+                            .column(Column::initial(300.0 * zoom).at_least(120.0 * zoom).clip(true).resizable(true)) // 当前名称
+                            .column(Column::initial(260.0 * zoom).at_least(100.0 * zoom).clip(true).resizable(true)) // 新名称
+                            .column(Column::initial(70.0 * zoom).at_least(50.0 * zoom).clip(true).resizable(true))    // 状态
+                            .column(Column::initial(300.0 * zoom).at_least(120.0 * zoom).clip(true).resizable(true)) // 说明
+                            // 行高跟随真实字体行高：galley 单行（Label 不换行）+ 上下各 2px 冗余，
+                            // 与高亮背景计算同源（选中/hover 背景 expand2 到 gapless），任何倍率不遮挡
+                            .header(26.0 * zoom, |mut header| {
                                 header.col(|ui| {
                                     ui.strong("当前名称（结构）");
                                 });
@@ -844,9 +888,9 @@ impl eframe::App for RenameApp {
                             })
                             .body(|mut body| {
                                 // 根目录恒可见（且默认展开）；子节点仅当其父目录展开时才渲染
-                                render_tree_rows(&mut body, tree, &self.preview_by_path, &mut self.expanded, &mut action, &mut self.selected_preview, true, true, 0);
+                                render_tree_rows(&mut body, tree, &self.preview_by_path, &mut self.expanded, &mut action, &mut self.selected_preview, zoom, true, true, 0);
                                 if tree.children.is_empty() {
-                                    body.row(26.0, |mut row| {
+                                    body.row(26.0 * zoom, |mut row| {
                                         row.col(|ui| {
                                             ui.label("（空目录）");
                                         });
@@ -996,6 +1040,7 @@ fn render_tree_rows(
     expanded: &mut std::collections::HashSet<std::path::PathBuf>,
     action: &mut PreviewAction,
     selected_preview: &mut Option<std::path::PathBuf>,
+    zoom: f32,
     visible: bool,
     default_open: bool,
     depth: usize,
@@ -1035,7 +1080,7 @@ fn render_tree_rows(
                 PreviewStatus::Error => "错误",
             }
         };
-        body.row(26.0, |mut row| {
+        body.row(26.0 * zoom, |mut row| {
             // 整行高亮：选中用 set_selected 画整行 selection 背景（在文字之下、跨 cell 无缝）；
             // hover 不依赖官方延迟通道（灰色且不稳定），改为每格自绘淡蓝（paint_row_hover）
             let is_selected = selected_preview.as_ref() == Some(&node.path);
@@ -1043,12 +1088,13 @@ fn render_tree_rows(
             row.col(|ui| {
                 paint_row_hover(ui, is_selected);
                 ui.horizontal(|ui| {
-                    ui.add_space(depth as f32 * 16.0);
+                    ui.add_space(depth as f32 * 16.0 * zoom);
                     // 折叠三角用 painter 直接绘制（▸/▾ 等字符在中文系统字体中
                     // 无字形会显示成问号；画出来的三角跨平台字体无关、永不出问号）
                     // 三角响应单击：折叠/展开切到这个三角上，目录名双击不再有折叠副作用。
                     // hover 时三角变强调蓝（与文件行文本色区分）并加浅蓝底提示可点击
-                    let (tri_rect, tri_resp) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::click());
+                    // 尺寸随 zoom 缩放，保持与文字比例一致
+                    let (tri_rect, tri_resp) = ui.allocate_exact_size(egui::vec2(12.0 * zoom, 12.0 * zoom), egui::Sense::click());
                     let painter = ui.painter();
                     let tri_color = if tri_resp.hovered() {
                         egui::Color32::from_rgb(0x2F, 0x6F, 0xD5) // 强调蓝：hover 高亮
@@ -1059,7 +1105,7 @@ fn render_tree_rows(
                         painter.rect_filled(tri_rect.expand2(egui::vec2(2.0, 1.0)), 2.0, egui::Color32::from_rgb(0xE8, 0xF0, 0xFB));
                     }
                     let c = tri_rect.center();
-                    let s = 3.5;
+                    let s = 3.5 * zoom;
                     let tri: Vec<egui::Pos2> = if is_open {
                         // 展开：向下小三角 ▼
                         vec![
@@ -1119,7 +1165,7 @@ fn render_tree_rows(
         });
         if is_open {
             for child in &node.children {
-                render_tree_rows(body, child, by_path, expanded, action, selected_preview, true, false, depth + 1);
+                render_tree_rows(body, child, by_path, expanded, action, selected_preview, zoom, true, false, depth + 1);
             }
         }
         return;
@@ -1153,7 +1199,7 @@ fn render_tree_rows(
             PreviewStatus::Error => "错误",
         }
     };
-    body.row(26.0, |mut row| {
+    body.row(26.0 * zoom, |mut row| {
         // 整行高亮：选中用 set_selected（跨 cell 无缝、在文字之下）；
         // hover 不依赖官方延迟通道，改为每格自绘淡蓝（paint_row_hover）
         let is_selected = selected_preview.as_ref() == Some(&node.path);
@@ -1161,7 +1207,7 @@ fn render_tree_rows(
         row.col(|ui| {
             paint_row_hover(ui, is_selected);
             ui.horizontal(|ui| {
-                ui.add_space(depth as f32 * 16.0);
+                ui.add_space(depth as f32 * 16.0 * zoom);
                 // 带点击感应的 label：单击选中该行（持久），双击打开所在文件夹并定位；
                 // 整行 hover 由 self 自绘（paint_row_hover），label 不再自绘局部矩形
                 let label = ui.add(egui::Label::new(egui::RichText::new(&node.name).color(color)).sense(egui::Sense::click()));
