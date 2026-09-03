@@ -844,6 +844,16 @@ impl eframe::App for RenameApp {
                         }
                     }
                 }
+                // 预览框右上角：显示当前缩放比例（固定字号，不随预览缩放、不抢注意）
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new(format!("缩放 {}%", (zoom * 100.0).round() as i32))
+                                .weak()
+                                .size(13.0),
+                        );
+                    });
+                });
                 // 多列表格：当前名称（树形缩进）/ 新名称 / 状态 / 说明
                 // 包一层双向滚动区：列总宽超过面板宽度时可左右滚动
                 use egui_extras::{Column, TableBuilder};
