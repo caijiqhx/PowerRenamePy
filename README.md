@@ -60,18 +60,16 @@ cargo build --release
 ## 目录结构
 
 ```
-rust/
 ├── Cargo.toml            # 依赖与 release 优化配置
-├── src/
-│   ├── main.rs           # 程序入口 + egui GUI
-│   ├── lib.rs            # 库入口
-│   ├── rules.rs          # 规则定义（10 类规则枚举）
-│   ├── transform.rs      # 名称转换流水线（规则依次应用）
-│   ├── fs_tree.rs        # 目录树加载与展平
-│   ├── preview.rs        # 预览计算：转换 + 冲突检测 + 状态标注
-│   ├── apply.rs          # 两阶段重命名执行 + 撤销
-│   └── list_io.rs        # 清单文件读写（UTF-8 BOM / GBK 自动识别）
-└── tests/                # 引擎测试
+└── src/
+    ├── main.rs           # 程序入口 + egui GUI
+    ├── lib.rs            # 库入口
+    ├── rules.rs          # 规则定义（10 类规则枚举）
+    ├── transform.rs      # 名称转换流水线（规则依次应用）
+    ├── fs_tree.rs        # 目录树加载与展平
+    ├── preview.rs        # 预览计算：转换 + 冲突检测 + 状态标注
+    ├── apply.rs          # 两阶段重命名执行 + 撤销
+    └── list_io.rs        # 清单文件读写（UTF-8 BOM / GBK 自动识别）
 ```
 
 ## 测试
