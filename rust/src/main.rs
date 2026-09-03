@@ -815,8 +815,6 @@ impl eframe::App for RenameApp {
                             .min_scrolled_height(300.0)
                             .striped(true)
                             .resizable(true)
-                            // 行级点击感应：让整行可点击（hover 整行高亮 + 单击选中持久）
-                            .sense(egui::Sense::click())
                             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                             // 四列全部可拖拽调宽：resizable(true) 启用拖拽，
                             // clip(true) 允许缩窄到内容宽度以下（否则长文件名会撑住最小宽）。
@@ -974,6 +972,23 @@ impl eframe::App for RenameApp {
 /// - 双击目录名 → 打开文件夹。
 /// 文件行：双击 → 打开所在文件夹并定位文件。
 /// 表头右键 → 刷新预览。
+
+/// 自绘整行 hover 背景：指针悬停在 cell 内 → 画淡蓝填充（与选中同色系、更浅）。
+/// 每格各画自己的区域（与 striped/selected 同款 expand2 无缝拼接），拼合即整行；
+/// 即时按指针位置判断，无延迟、不走官方 hover 的延迟帧缓存（官方通道为灰色且不稳定）。
+/// 已选中行不再叠加 hover（保持完整蓝条）。
+fn paint_row_hover(ui: &egui::Ui, is_selected: bool) {
+    if is_selected || !ui.ctx().rect_contains_pointer(ui.layer_id(), ui.max_rect()) {
+        return;
+    }
+    // 淡蓝 hover（≈ 主题 weak_bg_fill 0xD7E3F8 附近）；选中完整蓝条 0xCBDDF5 更深
+    ui.painter().rect_filled(
+        ui.max_rect().expand2(0.5 * ui.spacing().item_spacing),
+        egui::CornerRadius::ZERO,
+        egui::Color32::from_rgb(0xE0, 0xEB, 0xFA),
+    );
+}
+
 fn render_tree_rows(
     body: &mut egui_extras::TableBody,
     node: &power_rename::fs_tree::TreeNode,
@@ -1021,11 +1036,12 @@ fn render_tree_rows(
             }
         };
         body.row(26.0, |mut row| {
-            // 整行高亮（官方通道）：hover 由 egui_extras 自动整行渲染（延迟一帧）；
-            // 选中用 set_selected 画整行 selection 背景（在文字之下、跨 cell 无缝）
+            // 整行高亮：选中用 set_selected 画整行 selection 背景（在文字之下、跨 cell 无缝）；
+            // hover 不依赖官方延迟通道（灰色且不稳定），改为每格自绘淡蓝（paint_row_hover）
             let is_selected = selected_preview.as_ref() == Some(&node.path);
             row.set_selected(is_selected);
             row.col(|ui| {
+                paint_row_hover(ui, is_selected);
                 ui.horizontal(|ui| {
                     ui.add_space(depth as f32 * 16.0);
                     // 折叠三角用 painter 直接绘制（▸/▾ 等字符在中文系统字体中
@@ -1081,18 +1097,21 @@ fn render_tree_rows(
             });
             row.col(|ui| {
                 // 目录新名称（参与改名时显示）
+                paint_row_hover(ui, is_selected);
                 if !is_dir_skipped {
                     ui.colored_label(dir_color, dir_new_name);
                 }
             });
             row.col(|ui| {
                 // 目录状态
+                paint_row_hover(ui, is_selected);
                 if !is_dir_skipped {
                     ui.label(dir_status_label);
                 }
             });
             row.col(|ui| {
                 // 目录说明
+                paint_row_hover(ui, is_selected);
                 if !is_dir_skipped && !dir_note.is_empty() {
                     ui.label(dir_note);
                 }
@@ -1135,14 +1154,16 @@ fn render_tree_rows(
         }
     };
     body.row(26.0, |mut row| {
-        // 整行高亮：选中背景（官方通道，跨 cell 无缝、在文字之下）
+        // 整行高亮：选中用 set_selected（跨 cell 无缝、在文字之下）；
+        // hover 不依赖官方延迟通道，改为每格自绘淡蓝（paint_row_hover）
         let is_selected = selected_preview.as_ref() == Some(&node.path);
         row.set_selected(is_selected);
         row.col(|ui| {
+            paint_row_hover(ui, is_selected);
             ui.horizontal(|ui| {
                 ui.add_space(depth as f32 * 16.0);
                 // 带点击感应的 label：单击选中该行（持久），双击打开所在文件夹并定位；
-                // 整行 hover/选中高亮由官方通道负责，label 不再自绘局部矩形
+                // 整行 hover 由 self 自绘（paint_row_hover），label 不再自绘局部矩形
                 let label = ui.add(egui::Label::new(egui::RichText::new(&node.name).color(color)).sense(egui::Sense::click()));
                 // 左键单击：选中该行（持久高亮）
                 if label.clicked() {
@@ -1155,14 +1176,17 @@ fn render_tree_rows(
             });
         });
         row.col(|ui| {
+            paint_row_hover(ui, is_selected);
             if !is_skipped {
                 ui.colored_label(color, new_name);
             }
         });
         row.col(|ui| {
+            paint_row_hover(ui, is_selected);
             ui.label(status_label);
         });
         row.col(|ui| {
+            paint_row_hover(ui, is_selected);
             if !is_skipped && !note.is_empty() {
                 ui.label(note);
             }
