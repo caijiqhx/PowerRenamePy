@@ -1,14 +1,6 @@
-# PyInstaller 产物
-build/
-dist/
-dist-arm64/
-
-# ARM64 打包虚拟环境
-.build-venv-arm64/
-
-# 构建脚本临时文件
-__pycache__/
-*.pyc
-
 # Rust 编译产物
 rust/target/
+
+# 系统文件
+.DS_Store
+Thumbs.db
